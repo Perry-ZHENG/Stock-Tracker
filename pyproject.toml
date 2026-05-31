@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stock-agent"
+version = "0.1.0"
+description = "Local-first US market watch and signal assistant."
+readme = "PRD.md"
+requires-python = ">=3.12"
+authors = [
+  { name = "Perry-ZHENG" }
+]
+dependencies = [
+  "pydantic>=2",
+]
+
+[project.scripts]
+stock-agent = "stock_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
