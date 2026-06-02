@@ -6,6 +6,11 @@ from stock_agent.config import DEFAULT_CONFIG, default_config_yaml, init_config,
 
 
 class ConfigTests(unittest.TestCase):
+    '''
+    Test cases for configuration validation and initialization.
+    input: None
+    output: Test cases that validate the default configuration and the init_config function.
+    '''
     def test_default_config_validates(self) -> None:
         config = validate_config(DEFAULT_CONFIG)
 
@@ -31,6 +36,7 @@ class ConfigTests(unittest.TestCase):
             self.assertIn(section, yaml_text)
 
     def test_init_config_creates_files_without_real_secrets(self) -> None:
+        # Test that init_config creates the config.yaml and .env.example files with the expected content
         with tempfile.TemporaryDirectory() as tmp_dir:
             result = init_config(Path(tmp_dir))
 
@@ -42,6 +48,7 @@ class ConfigTests(unittest.TestCase):
             self.assertNotIn("sk-", result.env_example_path.read_text())
 
     def test_init_config_does_not_overwrite_without_force(self) -> None:
+        # test that init_config does not overwrite existing config.yaml without force=True
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             init_config(root)
@@ -54,6 +61,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config_path.read_text(encoding="utf-8"), "custom: true\n")
 
     def test_init_config_overwrites_with_force(self) -> None:
+        # test that init_config overwrites existing config.yaml with force=True
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             init_config(root)

@@ -20,6 +20,7 @@ COMMANDS: dict[str, str] = {
 
 
 def _not_implemented(command: str) -> int:
+# This is a placeholder for commands that are not yet implemented. It prints a message and returns a non-zero exit code.
     print(
         f"stock-agent {command}: command skeleton is available, "
         "but implementation is scheduled for a later task."
@@ -28,10 +29,12 @@ def _not_implemented(command: str) -> int:
 
 
 def _command_handler(command: str):
+    #  This function returns a handler that prints a not implemented message.
     return lambda _args: _not_implemented(command)
 
 
 def _handle_init_config(args: argparse.Namespace) -> int:
+    # init-config is implemented. It calls the init_config function and prints the results.
     result = init_config(Path.cwd(), force=args.force)
     config_status = "created" if result.config_written else "exists"
     env_status = "created" if result.env_example_written else "exists"
@@ -41,6 +44,7 @@ def _handle_init_config(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    # build the argument parser with subcommands and their handlers
     parser = argparse.ArgumentParser(
         prog="stock-agent",
         description="Local-first US market watch and signal assistant.",
@@ -74,6 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # main function to parse arguments and call the appropriate handler
     parser = build_parser()
     args = parser.parse_args(argv)
     handler = getattr(args, "handler", None)
