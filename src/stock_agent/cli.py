@@ -7,6 +7,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from stock_agent import __version__
+from stock_agent.commands.health import run_health
+from stock_agent.commands.run_demo import run_demo
 from stock_agent.config import init_config
 
 COMMANDS: dict[str, str] = {
@@ -43,6 +45,16 @@ def _handle_init_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_run_demo(_args: argparse.Namespace) -> int:
+    run_demo(Path.cwd())
+    return 0
+
+
+def _handle_health(_args: argparse.Namespace) -> int:
+    result = run_health(Path.cwd())
+    return 0 if result.status != "unhealthy" else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     # build the argument parser with subcommands and their handlers
     parser = argparse.ArgumentParser(
@@ -72,6 +84,10 @@ def build_parser() -> argparse.ArgumentParser:
                 help="Overwrite existing config files.",
             )
             subparser.set_defaults(handler=_handle_init_config)
+        elif command == "run-demo":
+            subparser.set_defaults(handler=_handle_run_demo)
+        elif command == "health":
+            subparser.set_defaults(handler=_handle_health)
         else:
             subparser.set_defaults(handler=_command_handler(command))
     return parser

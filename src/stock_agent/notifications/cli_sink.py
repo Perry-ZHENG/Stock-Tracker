@@ -1,0 +1,47 @@
+"""CLI notification sink."""
+
+from __future__ import annotations
+
+import sys
+from typing import TextIO
+
+from stock_agent.notifications.base import NotificationResult
+from stock_agent.schemas import Signal
+
+
+class CliNotificationSink:
+    channel = "cli"
+
+    def __init__(self, stream: TextIO | None = None) -> None:
+        self.stream = stream or sys.stdout
+
+    def send(self, signals: list[Signal]) -> NotificationResult:
+        self.stream.write(format_signal_message(signals))
+        self.stream.write("\n")
+        self.stream.flush()
+        return NotificationResult(channel=self.channel, success=True, attempts=1)
+
+
+def format_signal_message(signals: list[Signal]) -> str:
+    if not signals:
+        return "No approved signals."
+
+    lines = [f"Approved signals: {len(signals)}"]
+    for signal in sorted(signals, key=lambda item: (item.timestamp, item.symbol, item.strategy_id)):
+        lines.append(
+            " | ".join(
+                [
+                    signal.timestamp.isoformat().replace("+00:00", "Z"),
+                    signal.symbol,
+                    signal.strategy_id,
+                    signal.direction,
+                    f"strength={signal.strength:.2f}",
+                    f"confidence={signal.confidence:.2f}",
+                    signal.reason,
+                ]
+            )
+        )
+    return "\n".join(lines)
+
+
+__all__ = ["CliNotificationSink", "format_signal_message"]
