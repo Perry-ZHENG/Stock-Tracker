@@ -226,6 +226,11 @@ def default_config_yaml() -> str:
     return _to_yaml(DEFAULT_CONFIG)
 
 
+def render_config_yaml(config: dict[str, Any]) -> str:
+    validate_config(config)
+    return _to_yaml(config)
+
+
 def init_config(root: Path, force: bool = False) -> InitConfigResult:
     validate_config(DEFAULT_CONFIG)
     config_path = root / "configs" / "config.yaml"

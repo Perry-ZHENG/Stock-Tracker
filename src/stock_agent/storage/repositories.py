@@ -156,6 +156,95 @@ def list_notifications(connection: sqlite3.Connection, limit: int = 50) -> list[
     return notifications
 
 
+def list_config_changes(connection: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        "SELECT * FROM config_changes ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def insert_config_change(
+    connection: sqlite3.Connection,
+    *,
+    change_id: str,
+    status: str,
+    source: str,
+    before_config: dict[str, Any],
+    after_config: dict[str, Any],
+    diff: str,
+    created_at: datetime,
+    updated_at: datetime,
+) -> None:
+    connection.execute(
+        """
+        INSERT OR REPLACE INTO config_changes (
+            change_id, status, source, before_config, after_config, diff, created_at, updated_at
+        ) VALUES (
+            :change_id, :status, :source, :before_config, :after_config, :diff,
+            :created_at, :updated_at
+        )
+        """,
+        {
+            "change_id": change_id,
+            "status": status,
+            "source": source,
+            "before_config": json.dumps(before_config, ensure_ascii=False, sort_keys=True),
+            "after_config": json.dumps(after_config, ensure_ascii=False, sort_keys=True),
+            "diff": diff,
+            "created_at": created_at.isoformat().replace("+00:00", "Z"),
+            "updated_at": updated_at.isoformat().replace("+00:00", "Z"),
+        },
+    )
+    connection.commit()
+
+
+def get_config_change(connection: sqlite3.Connection, change_id: str) -> dict[str, Any] | None:
+    row = connection.execute(
+        "SELECT * FROM config_changes WHERE change_id = ?",
+        (change_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _config_change_from_row(row)
+
+
+def update_config_change_status(
+    connection: sqlite3.Connection,
+    *,
+    change_id: str,
+    status: str,
+    updated_at: datetime,
+    diff: str | None = None,
+) -> None:
+    if diff is None:
+        connection.execute(
+            "UPDATE config_changes SET status = ?, updated_at = ? WHERE change_id = ?",
+            (status, updated_at.isoformat().replace("+00:00", "Z"), change_id),
+        )
+    else:
+        connection.execute(
+            "UPDATE config_changes SET status = ?, diff = ?, updated_at = ? WHERE change_id = ?",
+            (status, diff, updated_at.isoformat().replace("+00:00", "Z"), change_id),
+        )
+    connection.commit()
+
+
+def list_news_items(connection: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        "SELECT * FROM news_items ORDER BY published_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _config_change_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    payload = dict(row)
+    payload["before_config"] = json.loads(payload["before_config"]) if payload["before_config"] else None
+    payload["after_config"] = json.loads(payload["after_config"]) if payload["after_config"] else None
+    return payload
+
+
 def _dump_model(model: BaseModel) -> dict[str, Any]:
     payload = model.model_dump(mode="json")
     for key, value in list(payload.items()):

@@ -25,7 +25,7 @@ class CliEntrypointTests(unittest.TestCase):
 
     def test_command_skeleton_returns_not_implemented(self) -> None:
         skeleton_commands = [
-            command for command in COMMANDS if command not in {"init-config", "run-demo", "health"}
+            command for command in COMMANDS if command not in {"init-config", "run-demo", "health", "cli"}
         ]
         for command in skeleton_commands:
             with self.subTest(command=command):

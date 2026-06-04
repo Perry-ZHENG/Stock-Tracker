@@ -7,7 +7,9 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from stock_agent import __version__
+from stock_agent.commands.config_review import run_config_review
 from stock_agent.commands.health import run_health
+from stock_agent.commands.query_cli import run_cli_query
 from stock_agent.commands.run_demo import run_demo
 from stock_agent.config import init_config
 
@@ -55,6 +57,17 @@ def _handle_health(_args: argparse.Namespace) -> int:
     return 0 if result.status != "unhealthy" else 1
 
 
+def _handle_cli_query(args: argparse.Namespace) -> int:
+    if args.action in {"review", "approve", "reject"}:
+        return run_config_review(
+            Path.cwd(),
+            action=args.action,
+            change_id=args.change_id,
+            limit=args.limit,
+        )
+    return run_cli_query(Path.cwd(), query=args.action, limit=args.limit)
+
+
 def build_parser() -> argparse.ArgumentParser:
     # build the argument parser with subcommands and their handlers
     parser = argparse.ArgumentParser(
@@ -88,6 +101,25 @@ def build_parser() -> argparse.ArgumentParser:
             subparser.set_defaults(handler=_handle_run_demo)
         elif command == "health":
             subparser.set_defaults(handler=_handle_health)
+        elif command == "cli":
+            subparser.add_argument(
+                "action",
+                choices=("signals", "health", "config-changes", "news", "review", "approve", "reject"),
+                nargs="?",
+                help="Read-only query or config review action to run.",
+            )
+            subparser.add_argument(
+                "change_id",
+                nargs="?",
+                help="Config change id for review, approve, or reject.",
+            )
+            subparser.add_argument(
+                "--limit",
+                type=int,
+                default=10,
+                help="Maximum rows to display.",
+            )
+            subparser.set_defaults(handler=_handle_cli_query)
         else:
             subparser.set_defaults(handler=_command_handler(command))
     return parser
