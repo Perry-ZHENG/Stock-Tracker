@@ -11,6 +11,8 @@ from stock_agent.commands.config_review import run_config_review
 from stock_agent.commands.health import run_health
 from stock_agent.commands.query_cli import run_cli_query
 from stock_agent.commands.run_demo import run_demo
+from stock_agent.commands.telegram import run_telegram
+from stock_agent.commands.worker import run_worker
 from stock_agent.config import init_config
 
 COMMANDS: dict[str, str] = {
@@ -57,6 +59,14 @@ def _handle_health(_args: argparse.Namespace) -> int:
     return 0 if result.status != "unhealthy" else 1
 
 
+def _handle_telegram(_args: argparse.Namespace) -> int:
+    return run_telegram(Path.cwd())
+
+
+def _handle_worker(args: argparse.Namespace) -> int:
+    return run_worker(Path.cwd(), once=args.once, interval_sec=args.interval_sec)
+
+
 def _handle_cli_query(args: argparse.Namespace) -> int:
     if args.action in {"review", "approve", "reject"}:
         return run_config_review(
@@ -65,7 +75,7 @@ def _handle_cli_query(args: argparse.Namespace) -> int:
             change_id=args.change_id,
             limit=args.limit,
         )
-    return run_cli_query(Path.cwd(), query=args.action, limit=args.limit)
+    return run_cli_query(Path.cwd(), query=args.action, limit=args.limit, symbol=args.symbol)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -119,7 +129,26 @@ def build_parser() -> argparse.ArgumentParser:
                 default=10,
                 help="Maximum rows to display.",
             )
+            subparser.add_argument(
+                "--symbol",
+                help="Optional symbol for news query.",
+            )
             subparser.set_defaults(handler=_handle_cli_query)
+        elif command == "telegram":
+            subparser.set_defaults(handler=_handle_telegram)
+        elif command == "worker":
+            subparser.add_argument(
+                "--once",
+                action="store_true",
+                help="Run one worker tick and exit.",
+            )
+            subparser.add_argument(
+                "--interval-sec",
+                type=float,
+                default=30,
+                help="Seconds between worker ticks.",
+            )
+            subparser.set_defaults(handler=_handle_worker)
         else:
             subparser.set_defaults(handler=_command_handler(command))
     return parser

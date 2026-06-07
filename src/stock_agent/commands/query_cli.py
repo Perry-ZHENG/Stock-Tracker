@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal, TextIO
 
 from stock_agent.config import DEFAULT_CONFIG, validate_config
+from stock_agent.news.service import NewsQueryService
 from stock_agent.storage.repositories import (
     list_config_changes,
     list_health_metrics,
@@ -23,6 +24,7 @@ def run_cli_query(
     *,
     query: CliQuery | None = None,
     limit: int = 10,
+    symbol: str | None = None,
     stream: TextIO | None = None,
 ) -> int:
     output = stream or sys.stdout
@@ -47,7 +49,14 @@ def run_cli_query(
     elif query == "config-changes":
         output.write(_format_config_changes(list_config_changes(connection, limit=limit)))
     elif query == "news":
-        output.write(_format_news(list_news_items(connection, limit=limit)))
+        service = NewsQueryService(connection, config=config.news)
+        result = service.query(symbols=[symbol] if symbol else [], limit=limit)
+        if result.ok:
+            output.write(result.message + "\n")
+            output.write(_format_news([item.model_dump(mode="json") for item in result.items]))
+        else:
+            output.write(result.message + "\n")
+            output.write(_format_news(list_news_items(connection, limit=limit)))
     else:
         output.write(f"query_error=unsupported query {query}\n")
         output.flush()

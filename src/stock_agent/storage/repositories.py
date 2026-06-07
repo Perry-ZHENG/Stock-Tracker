@@ -9,7 +9,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
-from stock_agent.schemas import HealthMetric, Signal, TraceChain
+from stock_agent.schemas import HealthMetric, NewsItem, Signal, TraceChain
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
@@ -236,6 +236,56 @@ def list_news_items(connection: sqlite3.Connection, limit: int = 50) -> list[dic
         (limit,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def insert_news_item(connection: sqlite3.Connection, item: NewsItem) -> None:
+    payload = _dump_model(item)
+    connection.execute(
+        """
+        INSERT OR REPLACE INTO news_items (
+            news_id, symbol, market, title, summary, url, source,
+            published_at, retention_level, created_at
+        ) VALUES (
+            :news_id, :symbol, :market, :title, :summary, :url, :source,
+            :published_at, :retention_level, :created_at
+        )
+        """,
+        payload,
+    )
+    connection.commit()
+
+
+def list_recent_news_items(
+    connection: sqlite3.Connection,
+    *,
+    symbols: list[str],
+    since: datetime,
+    limit: int = 50,
+) -> list[NewsItem]:
+    symbol_filter = [symbol.upper() for symbol in symbols]
+    if symbol_filter:
+        placeholders = ",".join("?" for _ in symbol_filter)
+        rows = connection.execute(
+            f"""
+            SELECT * FROM news_items
+            WHERE created_at >= ?
+              AND (symbol IS NULL OR UPPER(symbol) IN ({placeholders}))
+            ORDER BY published_at DESC
+            LIMIT ?
+            """,
+            [since.isoformat().replace("+00:00", "Z"), *symbol_filter, limit],
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            """
+            SELECT * FROM news_items
+            WHERE created_at >= ?
+            ORDER BY published_at DESC
+            LIMIT ?
+            """,
+            (since.isoformat().replace("+00:00", "Z"), limit),
+        ).fetchall()
+    return [_model_from_row(NewsItem, row, json_fields=()) for row in rows]
 
 
 def _config_change_from_row(row: sqlite3.Row) -> dict[str, Any]:

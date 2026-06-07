@@ -100,6 +100,17 @@ class QueryCliTests(unittest.TestCase):
         self.assertIn("chg-001", config_stream.getvalue())
         self.assertIn("QQQ news", news_stream.getvalue())
 
+    def test_news_query_without_provider_returns_readable_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            initialize_runtime_database(root)
+            stream = io.StringIO()
+
+            exit_code = run_cli_query(root, query="news", symbol="QQQ", stream=stream)
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("news_status=unavailable", stream.getvalue())
+
     def test_missing_database_returns_readable_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             stream = io.StringIO()
