@@ -31,6 +31,21 @@ class SqliteStorageTests(unittest.TestCase):
 
             self.assertTrue(set(REQUIRED_TABLES).issubset(table_names))
 
+    def test_open_database_ensures_tables_for_existing_runtime_db(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "stock_agent.sqlite"
+            db_path.touch()
+
+            connection = initialize_database(db_path)
+            table_names = {
+                row["name"]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+
+            self.assertIn("signal_statistics", table_names)
+
     def test_initialize_runtime_database_uses_default_demo_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

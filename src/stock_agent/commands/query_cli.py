@@ -7,16 +7,18 @@ from pathlib import Path
 from typing import Literal, TextIO
 
 from stock_agent.config import DEFAULT_CONFIG, validate_config
+from stock_agent.knowledge import generate_signal_statistics, persist_signal_statistics
 from stock_agent.news.service import NewsQueryService
 from stock_agent.storage.repositories import (
     list_config_changes,
     list_health_metrics,
     list_news_items,
+    list_signal_statistics,
     list_signals,
 )
 from stock_agent.storage.sqlite import open_database
 
-CliQuery = Literal["signals", "health", "config-changes", "news"]
+CliQuery = Literal["signals", "health", "config-changes", "news", "stats"]
 
 
 def run_cli_query(
@@ -25,11 +27,12 @@ def run_cli_query(
     query: CliQuery | None = None,
     limit: int = 10,
     symbol: str | None = None,
+    period: str = "day",
     stream: TextIO | None = None,
 ) -> int:
     output = stream or sys.stdout
     if query is None:
-        output.write("Available queries: signals, health, config-changes, news\n")
+        output.write("Available queries: signals, health, config-changes, news, stats\n")
         output.write("Example: stock-agent cli signals --limit 5\n")
         output.flush()
         return 0
@@ -57,6 +60,14 @@ def run_cli_query(
         else:
             output.write(result.message + "\n")
             output.write(_format_news(list_news_items(connection, limit=limit)))
+    elif query == "stats":
+        if period not in {"day", "month", "year"}:
+            output.write(f"query_error=unsupported stats period {period}\n")
+            output.flush()
+            return 1
+        statistic = generate_signal_statistics(connection, period=period)  # type: ignore[arg-type]
+        persist_signal_statistics(connection, statistic)
+        output.write(_format_statistics(list_signal_statistics(connection, period=period, limit=limit)))
     else:
         output.write(f"query_error=unsupported query {query}\n")
         output.flush()
@@ -142,6 +153,28 @@ def _format_news(rows: list[dict[str, object]]) -> str:
                     str(row["title"]),
                     str(row["source"]),
                     str(row["url"]),
+                ]
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _format_statistics(rows: list[dict[str, object]]) -> str:
+    if not rows:
+        return "statistics: no rows\n"
+    lines = ["period | period_start | signal_count | trigger_count | run_count | hit_count_status"]
+    for row in rows:
+        details = row["details"]
+        hit_status = details.get("hit_count_status", "") if isinstance(details, dict) else ""
+        lines.append(
+            " | ".join(
+                [
+                    str(row["period"]),
+                    str(row["period_start"]),
+                    str(row["signal_count"]),
+                    str(row["trigger_count"]),
+                    str(row["run_count"]),
+                    str(hit_status),
                 ]
             )
         )

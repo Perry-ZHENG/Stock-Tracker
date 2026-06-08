@@ -38,6 +38,23 @@ class CliEntrypointTests(unittest.TestCase):
             self.assertTrue((Path(tmp_dir) / "configs" / "config.yaml").exists())
             self.assertTrue((Path(tmp_dir) / ".env.example").exists())
 
+    def test_init_config_command_respects_stock_agent_workdir_env(self) -> None:
+        with TemporaryDirectory() as tmp_dir, patch.dict("os.environ", {"STOCK_AGENT_WORKDIR": tmp_dir}):
+            self.assertEqual(main(["init-config"]), 0)
+
+            self.assertTrue((Path(tmp_dir) / "configs" / "config.yaml").exists())
+            self.assertTrue((Path(tmp_dir) / ".env.example").exists())
+
+    def test_init_config_command_respects_stock_agent_config_env(self) -> None:
+        with TemporaryDirectory() as tmp_dir, patch.dict(
+            "os.environ",
+            {"STOCK_AGENT_WORKDIR": tmp_dir, "STOCK_AGENT_CONFIG": "custom/config.yaml"},
+        ):
+            self.assertEqual(main(["init-config"]), 0)
+
+            self.assertTrue((Path(tmp_dir) / "custom" / "config.yaml").exists())
+            self.assertTrue((Path(tmp_dir) / ".env.example").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

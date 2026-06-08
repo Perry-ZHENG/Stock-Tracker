@@ -18,6 +18,7 @@ def run_config_review(
     action: str,
     change_id: str | None = None,
     limit: int = 10,
+    config_path: Path | None = None,
     stream: TextIO | None = None,
 ) -> int:
     output = stream or sys.stdout
@@ -38,7 +39,7 @@ def run_config_review(
             change = approve_config_change(
                 connection,
                 change_id=change_id,
-                config_path=root / "configs" / "config.yaml",
+                config_path=config_path or root / "configs" / "config.yaml",
             )
             output.write(f"config_change={change['change_id']} status={change['status']}\n")
         elif action == "reject":

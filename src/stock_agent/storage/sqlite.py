@@ -15,6 +15,7 @@ REQUIRED_TABLES = (
     "config_changes",
     "notifications",
     "news_items",
+    "signal_statistics",
 )
 
 
@@ -23,6 +24,7 @@ def open_database(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    _create_tables(connection)
     return connection
 
 
@@ -124,6 +126,19 @@ def _create_tables(connection: sqlite3.Connection) -> None:
             published_at TEXT NOT NULL,
             retention_level TEXT NOT NULL,
             created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS signal_statistics (
+            statistic_id TEXT PRIMARY KEY,
+            period TEXT NOT NULL CHECK (period IN ('day', 'month', 'year')),
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            generated_at TEXT NOT NULL,
+            signal_count INTEGER NOT NULL CHECK (signal_count >= 0),
+            trigger_count INTEGER NOT NULL CHECK (trigger_count >= 0),
+            run_count INTEGER NOT NULL CHECK (run_count >= 0),
+            hit_count INTEGER,
+            details TEXT NOT NULL
         );
         """
     )

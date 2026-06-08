@@ -288,6 +288,76 @@ def list_recent_news_items(
     return [_model_from_row(NewsItem, row, json_fields=()) for row in rows]
 
 
+def insert_signal_statistic(
+    connection: sqlite3.Connection,
+    *,
+    statistic_id: str,
+    period: str,
+    period_start: datetime,
+    period_end: datetime,
+    generated_at: datetime,
+    signal_count: int,
+    trigger_count: int,
+    run_count: int,
+    hit_count: int | None,
+    details: dict[str, Any],
+) -> None:
+    connection.execute(
+        """
+        INSERT OR REPLACE INTO signal_statistics (
+            statistic_id, period, period_start, period_end, generated_at,
+            signal_count, trigger_count, run_count, hit_count, details
+        ) VALUES (
+            :statistic_id, :period, :period_start, :period_end, :generated_at,
+            :signal_count, :trigger_count, :run_count, :hit_count, :details
+        )
+        """,
+        {
+            "statistic_id": statistic_id,
+            "period": period,
+            "period_start": period_start.isoformat().replace("+00:00", "Z"),
+            "period_end": period_end.isoformat().replace("+00:00", "Z"),
+            "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
+            "signal_count": signal_count,
+            "trigger_count": trigger_count,
+            "run_count": run_count,
+            "hit_count": hit_count,
+            "details": json.dumps(details, ensure_ascii=False, sort_keys=True),
+        },
+    )
+    connection.commit()
+
+
+def list_signal_statistics(
+    connection: sqlite3.Connection,
+    *,
+    period: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    if period is None:
+        rows = connection.execute(
+            "SELECT * FROM signal_statistics ORDER BY period_start DESC, generated_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            """
+            SELECT * FROM signal_statistics
+            WHERE period = ?
+            ORDER BY period_start DESC, generated_at DESC
+            LIMIT ?
+            """,
+            (period, limit),
+        ).fetchall()
+    return [_signal_statistic_from_row(row) for row in rows]
+
+
+def _signal_statistic_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    payload = dict(row)
+    payload["details"] = json.loads(payload["details"])
+    return payload
+
+
 def _config_change_from_row(row: sqlite3.Row) -> dict[str, Any]:
     payload = dict(row)
     payload["before_config"] = json.loads(payload["before_config"]) if payload["before_config"] else None

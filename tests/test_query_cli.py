@@ -20,6 +20,7 @@ class QueryCliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertIn("Available queries", stream.getvalue())
+        self.assertIn("stats", stream.getvalue())
 
     def test_queries_recent_signals(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

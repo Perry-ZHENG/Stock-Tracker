@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -39,9 +40,32 @@ def _command_handler(command: str):
     return lambda _args: _not_implemented(command)
 
 
+def _runtime_root() -> Path:
+    """Return the project root used by CLI commands.
+
+    Deployment managers such as launchd, systemd, and pm2 can set
+    STOCK_AGENT_WORKDIR instead of relying on the current shell directory.
+    """
+    workdir = os.getenv("STOCK_AGENT_WORKDIR")
+    if workdir:
+        return Path(workdir).expanduser()
+    return Path.cwd()
+
+
+def _runtime_config_path(root: Path) -> Path | None:
+    config_path = os.getenv("STOCK_AGENT_CONFIG")
+    if not config_path:
+        return None
+    path = Path(config_path).expanduser()
+    if path.is_absolute():
+        return path
+    return root / path
+
+
 def _handle_init_config(args: argparse.Namespace) -> int:
     # init-config is implemented. It calls the init_config function and prints the results.
-    result = init_config(Path.cwd(), force=args.force)
+    root = _runtime_root()
+    result = init_config(root, force=args.force, config_path=_runtime_config_path(root))
     config_status = "created" if result.config_written else "exists"
     env_status = "created" if result.env_example_written else "exists"
     print(f"{config_status}: {result.config_path}")
@@ -50,32 +74,40 @@ def _handle_init_config(args: argparse.Namespace) -> int:
 
 
 def _handle_run_demo(_args: argparse.Namespace) -> int:
-    run_demo(Path.cwd())
+    run_demo(_runtime_root())
     return 0
 
 
 def _handle_health(_args: argparse.Namespace) -> int:
-    result = run_health(Path.cwd())
+    result = run_health(_runtime_root())
     return 0 if result.status != "unhealthy" else 1
 
 
 def _handle_telegram(_args: argparse.Namespace) -> int:
-    return run_telegram(Path.cwd())
+    return run_telegram(_runtime_root())
 
 
 def _handle_worker(args: argparse.Namespace) -> int:
-    return run_worker(Path.cwd(), once=args.once, interval_sec=args.interval_sec)
+    return run_worker(_runtime_root(), once=args.once, interval_sec=args.interval_sec)
 
 
 def _handle_cli_query(args: argparse.Namespace) -> int:
+    root = _runtime_root()
     if args.action in {"review", "approve", "reject"}:
         return run_config_review(
-            Path.cwd(),
+            root,
             action=args.action,
             change_id=args.change_id,
             limit=args.limit,
+            config_path=_runtime_config_path(root),
         )
-    return run_cli_query(Path.cwd(), query=args.action, limit=args.limit, symbol=args.symbol)
+    return run_cli_query(
+        root,
+        query=args.action,
+        limit=args.limit,
+        symbol=args.symbol,
+        period=args.period,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -114,7 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
         elif command == "cli":
             subparser.add_argument(
                 "action",
-                choices=("signals", "health", "config-changes", "news", "review", "approve", "reject"),
+                choices=("signals", "health", "config-changes", "news", "stats", "review", "approve", "reject"),
                 nargs="?",
                 help="Read-only query or config review action to run.",
             )
@@ -132,6 +164,12 @@ def build_parser() -> argparse.ArgumentParser:
             subparser.add_argument(
                 "--symbol",
                 help="Optional symbol for news query.",
+            )
+            subparser.add_argument(
+                "--period",
+                choices=("day", "month", "year"),
+                default="day",
+                help="Statistics period for stats query.",
             )
             subparser.set_defaults(handler=_handle_cli_query)
         elif command == "telegram":

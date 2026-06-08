@@ -231,9 +231,11 @@ def render_config_yaml(config: dict[str, Any]) -> str:
     return _to_yaml(config)
 
 
-def init_config(root: Path, force: bool = False) -> InitConfigResult:
+def init_config(root: Path, force: bool = False, config_path: Path | None = None) -> InitConfigResult:
     validate_config(DEFAULT_CONFIG)
-    config_path = root / "configs" / "config.yaml"
+    config_path = config_path or root / "configs" / "config.yaml"
+    if not config_path.is_absolute():
+        config_path = root / config_path
     env_example_path = root / ".env.example"
 
     config_written = _write_text(config_path, default_config_yaml(), force=force)

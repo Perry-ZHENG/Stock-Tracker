@@ -1,0 +1,16 @@
+[Unit]
+Description=Stock Agent worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=${STOCK_AGENT_ENV_FILE}
+WorkingDirectory=${STOCK_AGENT_WORKDIR}
+ExecStart=${STOCK_AGENT_BIN} worker --interval-sec ${STOCK_AGENT_INTERVAL_SEC}
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
