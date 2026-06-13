@@ -7,12 +7,18 @@ import sys
 from pathlib import Path
 from typing import TextIO
 
-from stock_agent.config import DEFAULT_CONFIG, validate_config
+from stock_agent.config_loader import RuntimeConfigContext, load_config
 
 
-def run_telegram(root: Path, *, stream: TextIO | None = None) -> int:
+def run_telegram(
+    root: Path,
+    *,
+    stream: TextIO | None = None,
+    config_context: RuntimeConfigContext | None = None,
+) -> int:
     output = stream or sys.stdout
-    config = validate_config(DEFAULT_CONFIG)
+    config_context = config_context or load_config(root)
+    config = config_context.config
     token = os.getenv(config.telegram.token_env)
 
     if not config.telegram.enabled:

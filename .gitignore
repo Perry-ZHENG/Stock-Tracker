@@ -29,3 +29,6 @@ data/runtime/
 dist/
 build/
 *.egg-info/
+
+# Presentation/reporting artifacts
+presentation/

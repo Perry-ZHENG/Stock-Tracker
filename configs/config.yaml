@@ -19,6 +19,13 @@ bar:
   session: regular_only
   include_pre_market: false
   include_after_hours: false
+schedule:
+  timezone: America/New_York
+  regular_session_start: 09:30
+  regular_session_end: 16:00
+  premarket_lead_minutes: 60
+  close_focus_window_minutes: 60
+  afterhours_tail_minutes: 60
 strategies:
   ma_cross:
     enabled: true
@@ -38,6 +45,15 @@ strategies:
   kdj:
     enabled: false
     window: 9
+    k_smoothing: 3
+    d_smoothing: 3
+  active_j:
+    enabled: false
+    j_threshold: 20.0
+    ma_window: 80
+    kdj_window: 9
+    k_smoothing: 3
+    d_smoothing: 3
 telegram:
   enabled: false
   token_env: TELEGRAM_BOT_TOKEN

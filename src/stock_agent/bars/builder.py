@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from stock_agent.bars.aggregator import aggregate_to_interval
 from stock_agent.bars.validation import filter_regular_session, validate_bars
 from stock_agent.schemas import Bar
 
@@ -21,3 +22,17 @@ class BarBuilder:
         if self.regular_session_only:
             return filter_regular_session(validated_bars)
         return validated_bars
+
+    def from_source_bars(
+        self,
+        bars: list[Bar],
+        *,
+        target_interval: str = "30m",
+        source_interval: str = "1m",
+    ) -> list[Bar]:
+        aggregated = aggregate_to_interval(
+            bars,
+            target_interval=target_interval,
+            source_interval=source_interval,
+        ).bars
+        return self.from_standard_bars(aggregated)

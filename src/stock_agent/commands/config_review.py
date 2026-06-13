@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 from typing import TextIO
 
-from stock_agent.config import DEFAULT_CONFIG, validate_config
 from stock_agent.config_changes import ConfigChangeError, approve_config_change, reject_config_change
+from stock_agent.config_loader import RuntimeConfigContext, load_config
 from stock_agent.storage.repositories import get_config_change, list_config_changes
 from stock_agent.storage.sqlite import open_database
 
@@ -20,9 +20,12 @@ def run_config_review(
     limit: int = 10,
     config_path: Path | None = None,
     stream: TextIO | None = None,
+    config_context: RuntimeConfigContext | None = None,
 ) -> int:
     output = stream or sys.stdout
-    config = validate_config(DEFAULT_CONFIG)
+    config_context = config_context or load_config(root, config_path=config_path)
+    config = config_context.config
+    target_config_path = config_path or config_context.config_path
     sqlite_path = root / config.storage.sqlite_path
     if not sqlite_path.exists():
         output.write(f"review_error=no runtime database\nsqlite_path={sqlite_path}\n")
@@ -39,7 +42,8 @@ def run_config_review(
             change = approve_config_change(
                 connection,
                 change_id=change_id,
-                config_path=config_path or root / "configs" / "config.yaml",
+                config_path=target_config_path,
+                reload_validator=lambda _raw_config: load_config(root, config_path=target_config_path),
             )
             output.write(f"config_change={change['change_id']} status={change['status']}\n")
         elif action == "reject":

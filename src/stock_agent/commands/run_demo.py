@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TextIO
 
 from stock_agent.bars import BarBuilder
-from stock_agent.config import DEFAULT_CONFIG, validate_config
+from stock_agent.config_loader import RuntimeConfigContext, load_config
 from stock_agent.health import HealthThresholds, record_health_metric
 from stock_agent.notifications import (
     CliNotificationSink,
@@ -44,9 +44,11 @@ def run_demo(
     root: Path,
     *,
     stream: TextIO | None = None,
+    config_context: RuntimeConfigContext | None = None,
 ) -> RunDemoSummary:
     output = stream or sys.stdout
-    config = validate_config(DEFAULT_CONFIG)
+    config_context = config_context or load_config(root)
+    config = config_context.config
     sqlite_path = root / config.storage.sqlite_path
     connection = initialize_runtime_database(root, config)
 

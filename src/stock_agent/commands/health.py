@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
-from stock_agent.config import DEFAULT_CONFIG, validate_config
+from stock_agent.config_loader import RuntimeConfigContext, load_config
 from stock_agent.schemas import HealthMetric, TraceChain
 from stock_agent.storage.repositories import list_health_metrics, list_trace_chain
 from stock_agent.storage.sqlite import open_database
@@ -21,9 +21,15 @@ class HealthCommandResult:
     sqlite_path: Path
 
 
-def run_health(root: Path, *, stream: TextIO | None = None) -> HealthCommandResult:
+def run_health(
+    root: Path,
+    *,
+    stream: TextIO | None = None,
+    config_context: RuntimeConfigContext | None = None,
+) -> HealthCommandResult:
     output = stream or sys.stdout
-    config = validate_config(DEFAULT_CONFIG)
+    config_context = config_context or load_config(root)
+    config = config_context.config
     sqlite_path = root / config.storage.sqlite_path
 
     if not sqlite_path.exists():

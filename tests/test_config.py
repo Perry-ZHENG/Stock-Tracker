@@ -1,8 +1,11 @@
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
-from stock_agent.config import DEFAULT_CONFIG, default_config_yaml, init_config, validate_config
+from stock_agent.config import DEFAULT_CONFIG, default_config_yaml, init_config, render_config_yaml, validate_config
+from stock_agent.config_loader import load_config, reload_config
 
 
 class ConfigTests(unittest.TestCase):
@@ -26,6 +29,7 @@ class ConfigTests(unittest.TestCase):
             "provider:",
             "symbols:",
             "bar:",
+            "schedule:",
             "strategies:",
             "telegram:",
             "news:",
@@ -72,6 +76,48 @@ class ConfigTests(unittest.TestCase):
 
             self.assertTrue(result.config_written)
             self.assertIn("app:", config_path.read_text(encoding="utf-8"))
+
+    def test_load_config_reads_yaml_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            init_config(root)
+
+            context = load_config(root)
+
+        self.assertFalse(context.used_defaults)
+        self.assertEqual(context.config.provider.default, "csv_demo")
+        self.assertEqual(context.config.symbols.default, ["AAPL", "MSFT", "NVDA"])
+        self.assertEqual(context.config_path.name, "config.yaml")
+
+    def test_load_config_uses_stock_agent_config_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            custom_config = deepcopy(DEFAULT_CONFIG)
+            custom_config["storage"]["sqlite_path"] = "custom/runtime.sqlite"
+            custom_config["symbols"]["default"] = ["QQQ"]
+            config_path = root / "custom" / "config.yaml"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(render_config_yaml(custom_config), encoding="utf-8")
+
+            with patch.dict("os.environ", {"STOCK_AGENT_CONFIG": "custom/config.yaml"}):
+                context = load_config(root)
+
+        self.assertEqual(context.config.storage.sqlite_path, "custom/runtime.sqlite")
+        self.assertEqual(context.config.symbols.default, ["QQQ"])
+        self.assertEqual(context.config_path, config_path)
+
+    def test_reload_config_failure_does_not_mutate_current_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            init_config(root)
+            current = load_config(root)
+            current.config_path.write_text("app:\n  name: broken\n", encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                reload_config(current, root=root)
+
+        self.assertEqual(current.config.app.name, "stock-agent")
+        self.assertEqual(current.config.provider.default, "csv_demo")
 
 
 if __name__ == "__main__":

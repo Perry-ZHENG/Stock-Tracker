@@ -17,6 +17,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "provider": {
         "default": "csv_demo",
+        "priority": ["csv_demo"],
+        "fallback": {
+            "enabled": True,
+            "order": ["csv_demo"],
+        },
         "csv_demo": {
             "path": "data/sample/sample_bars.csv",
         },
@@ -33,6 +38,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "session": "regular_only",
         "include_pre_market": False,
         "include_after_hours": False,
+    },
+    "schedule": {
+        "timezone": "America/New_York",
+        "regular_session_start": "09:30",
+        "regular_session_end": "16:00",
+        "premarket_lead_minutes": 60,
+        "close_focus_window_minutes": 60,
+        "afterhours_tail_minutes": 60,
     },
     "strategies": {
         "ma_cross": {
@@ -53,6 +66,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "kdj": {
             "enabled": False,
             "window": 9,
+        },
+        "active_j": {
+            "enabled": False,
+            "j_threshold": 20.0,
+            "ma_window": 80,
+            "kdj_window": 9,
+            "k_smoothing": 3,
+            "d_smoothing": 3,
         },
     },
     "telegram": {
@@ -110,8 +131,15 @@ class LiveProviderConfig(BaseModel):
     api_key_env: str
 
 
+class ProviderFallbackConfig(BaseModel):
+    enabled: bool = True
+    order: list[str] = Field(default_factory=lambda: ["csv_demo"])
+
+
 class ProviderConfig(BaseModel):
     default: str
+    priority: list[str] = Field(default_factory=list)
+    fallback: ProviderFallbackConfig = Field(default_factory=ProviderFallbackConfig)
     csv_demo: CsvDemoProviderConfig
     live: LiveProviderConfig
 
@@ -125,6 +153,15 @@ class BarConfig(BaseModel):
     session: Literal["regular_only"]
     include_pre_market: bool
     include_after_hours: bool
+
+
+class ScheduleConfig(BaseModel):
+    timezone: str = "America/New_York"
+    regular_session_start: str = "09:30"
+    regular_session_end: str = "16:00"
+    premarket_lead_minutes: int = Field(ge=0)
+    close_focus_window_minutes: int = Field(ge=0)
+    afterhours_tail_minutes: int = Field(ge=0)
 
 
 class MaCrossConfig(BaseModel):
@@ -148,6 +185,17 @@ class MacdConfig(BaseModel):
 class KdjConfig(BaseModel):
     enabled: bool
     window: int = Field(gt=0)
+    k_smoothing: int = Field(default=3, gt=0)
+    d_smoothing: int = Field(default=3, gt=0)
+
+
+class ActiveJConfig(BaseModel):
+    enabled: bool
+    j_threshold: float = Field(ge=0)
+    ma_window: int = Field(gt=0)
+    kdj_window: int = Field(gt=0)
+    k_smoothing: int = Field(gt=0)
+    d_smoothing: int = Field(gt=0)
 
 
 class StrategiesConfig(BaseModel):
@@ -155,6 +203,7 @@ class StrategiesConfig(BaseModel):
     boll: BollConfig
     macd: MacdConfig
     kdj: KdjConfig
+    active_j: ActiveJConfig = Field(default_factory=lambda: ActiveJConfig.model_validate(DEFAULT_CONFIG["strategies"]["active_j"]))
 
 
 class TelegramConfig(BaseModel):
@@ -198,6 +247,7 @@ class StockAgentConfig(BaseModel):
     provider: ProviderConfig
     symbols: SymbolsConfig
     bar: BarConfig
+    schedule: ScheduleConfig = Field(default_factory=lambda: ScheduleConfig.model_validate(DEFAULT_CONFIG["schedule"]))
     strategies: StrategiesConfig
     telegram: TelegramConfig
     news: NewsConfig

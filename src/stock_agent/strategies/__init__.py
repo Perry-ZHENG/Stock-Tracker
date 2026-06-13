@@ -8,6 +8,7 @@ from stock_agent.strategies.active_j import (
     generate_active_j_signals,
 )
 from stock_agent.strategies.boll import BOLL_STRATEGY_ID, generate_boll_signals
+from stock_agent.strategies.engine import StrategyEngine, StrategyRunResult
 from stock_agent.strategies.kdj import (
     DEFAULT_KDJ_PARAMS,
     KDJ_STRATEGY_ID,
@@ -35,6 +36,8 @@ __all__ = [
     "MA_CROSS_DEMO_STRATEGY_ID",
     "MA_CROSS_STRATEGY_ID",
     "MACD_STRATEGY_ID",
+    "StrategyEngine",
+    "StrategyRunResult",
     "generate_active_j_signals",
     "generate_boll_signals",
     "calculate_kdj_values",

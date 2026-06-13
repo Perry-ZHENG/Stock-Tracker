@@ -6,6 +6,7 @@ import sys
 from typing import TextIO
 
 from stock_agent.notifications.base import NotificationResult
+from stock_agent.notifications.formatter import format_signal_message
 from stock_agent.schemas import Signal
 
 
@@ -21,27 +22,11 @@ class CliNotificationSink:
         self.stream.flush()
         return NotificationResult(channel=self.channel, success=True, attempts=1)
 
-
-def format_signal_message(signals: list[Signal]) -> str:
-    if not signals:
-        return "No approved signals."
-
-    lines = [f"Approved signals: {len(signals)}"]
-    for signal in sorted(signals, key=lambda item: (item.timestamp, item.symbol, item.strategy_id)):
-        lines.append(
-            " | ".join(
-                [
-                    signal.timestamp.isoformat().replace("+00:00", "Z"),
-                    signal.symbol,
-                    signal.strategy_id,
-                    signal.direction,
-                    f"strength={signal.strength:.2f}",
-                    f"confidence={signal.confidence:.2f}",
-                    signal.reason,
-                ]
-            )
-        )
-    return "\n".join(lines)
+    def send_payload(self, payload: dict[str, object]) -> NotificationResult:
+        self.stream.write(str(payload.get("message") or "No approved signals."))
+        self.stream.write("\n")
+        self.stream.flush()
+        return NotificationResult(channel=self.channel, success=True, attempts=1)
 
 
 __all__ = ["CliNotificationSink", "format_signal_message"]

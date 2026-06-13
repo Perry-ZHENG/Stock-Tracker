@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Literal
 
 from stock_agent.commands.query_cli import run_cli_query
-from stock_agent.config import DEFAULT_CONFIG
 from stock_agent.config_changes import create_config_change
+from stock_agent.config_loader import RuntimeConfigContext, load_config
 
 TelegramRole = Literal["user", "admin"]
 
@@ -51,7 +51,9 @@ def handle_telegram_message(
     text: str,
     allowed_user_ids: list[int],
     admin_user_ids: list[int] | None = None,
+    config_context: RuntimeConfigContext | None = None,
 ) -> TelegramCommandResult:
+    config_context = config_context or load_config(root)
     role = resolve_telegram_role(
         user_id=user_id,
         allowed_user_ids=allowed_user_ids,
@@ -66,18 +68,27 @@ def handle_telegram_message(
 
     command = parts[0].lower()
     if command in {"/signals", "signals"}:
-        return _query(root, "signals", role=role, limit=_limit(parts))
+        return _query(root, "signals", role=role, limit=_limit(parts), config_context=config_context)
     if command in {"/health", "health"}:
-        return _query(root, "health", role=role, limit=_limit(parts))
+        return _query(root, "health", role=role, limit=_limit(parts), config_context=config_context)
     if command in {"/news", "news"}:
-        return _query(root, "news", role=role, limit=_limit(parts), symbol=_symbol(parts))
+        return _query(
+            root,
+            "news",
+            role=role,
+            limit=_limit(parts),
+            symbol=_symbol(parts),
+            config_context=config_context,
+        )
+    if command in {"/schedule", "schedule"}:
+        return _query(root, "schedule", role=role, limit=_limit(parts), config_context=config_context)
     if command in {"/config", "config"}:
-        return _handle_config_request(connection, role=role, parts=parts)
+        return _handle_config_request(connection, role=role, parts=parts, config_context=config_context)
 
     return TelegramCommandResult(
         ok=False,
         role=role,
-        message="telegram_error=unsupported command; supported: /signals, /health, /news, /config add-symbol SYMBOL",
+        message="telegram_error=unsupported command; supported: /signals, /health, /news, /schedule, /config add-symbol SYMBOL",
     )
 
 
@@ -88,11 +99,19 @@ def _query(
     role: TelegramRole,
     limit: int,
     symbol: str | None = None,
+    config_context: RuntimeConfigContext | None = None,
 ) -> TelegramCommandResult:
     from io import StringIO
 
     stream = StringIO()
-    exit_code = run_cli_query(root, query=query, limit=limit, symbol=symbol, stream=stream)  # type: ignore[arg-type]
+    exit_code = run_cli_query(
+        root,
+        query=query,
+        limit=limit,
+        symbol=symbol,
+        stream=stream,
+        config_context=config_context,
+    )  # type: ignore[arg-type]
     return TelegramCommandResult(
         ok=exit_code == 0,
         role=role,
@@ -105,6 +124,7 @@ def _handle_config_request(
     *,
     role: TelegramRole,
     parts: list[str],
+    config_context: RuntimeConfigContext,
 ) -> TelegramCommandResult:
     if role != "admin":
         return TelegramCommandResult(
@@ -120,8 +140,8 @@ def _handle_config_request(
         )
 
     symbol = parts[2].upper()
-    before_config = copy.deepcopy(DEFAULT_CONFIG)
-    after_config = copy.deepcopy(DEFAULT_CONFIG)
+    before_config = copy.deepcopy(config_context.raw_config)
+    after_config = copy.deepcopy(config_context.raw_config)
     if symbol not in after_config["symbols"]["default"]:
         after_config["symbols"]["default"] = [*after_config["symbols"]["default"], symbol]
     diff = f"symbols.default +{symbol}"

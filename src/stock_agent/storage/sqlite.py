@@ -16,6 +16,7 @@ REQUIRED_TABLES = (
     "notifications",
     "news_items",
     "signal_statistics",
+    "strategy_snapshots",
 )
 
 
@@ -139,6 +140,17 @@ def _create_tables(connection: sqlite3.Connection) -> None:
             run_count INTEGER NOT NULL CHECK (run_count >= 0),
             hit_count INTEGER,
             details TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS strategy_snapshots (
+            snapshot_id TEXT PRIMARY KEY,
+            date TEXT NOT NULL,
+            enabled_strategies TEXT NOT NULL,
+            strategy_params TEXT NOT NULL,
+            symbols TEXT NOT NULL,
+            data_policy TEXT NOT NULL,
+            watch_window TEXT NOT NULL,
+            created_at TEXT NOT NULL
         );
         """
     )

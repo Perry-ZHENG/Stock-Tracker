@@ -7,6 +7,12 @@ from stock_agent.providers.live import (
     LiveProviderLimits,
     create_live_provider,
 )
+from stock_agent.providers.registry import (
+    ProviderAttempt,
+    ProviderFetchResult,
+    ProviderRegistry,
+    ProviderRegistryError,
+)
 
 __all__ = [
     "AlphaVantageProvider",
@@ -14,5 +20,9 @@ __all__ = [
     "CsvDemoProviderError",
     "LiveProviderError",
     "LiveProviderLimits",
+    "ProviderAttempt",
+    "ProviderFetchResult",
+    "ProviderRegistry",
+    "ProviderRegistryError",
     "create_live_provider",
 ]

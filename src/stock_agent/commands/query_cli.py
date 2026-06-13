@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import sys
+from datetime import date, datetime
 from pathlib import Path
 from typing import Literal, TextIO
+from zoneinfo import ZoneInfo
 
-from stock_agent.config import DEFAULT_CONFIG, validate_config
+from stock_agent.config_loader import RuntimeConfigContext, load_config
 from stock_agent.knowledge import generate_signal_statistics, persist_signal_statistics
 from stock_agent.news.service import NewsQueryService
+from stock_agent.scheduler import WatchSchedule, build_watch_schedule
 from stock_agent.storage.repositories import (
     list_config_changes,
     list_health_metrics,
@@ -18,7 +21,7 @@ from stock_agent.storage.repositories import (
 )
 from stock_agent.storage.sqlite import open_database
 
-CliQuery = Literal["signals", "health", "config-changes", "news", "stats"]
+CliQuery = Literal["signals", "health", "config-changes", "news", "stats", "schedule"]
 
 
 def run_cli_query(
@@ -29,6 +32,8 @@ def run_cli_query(
     symbol: str | None = None,
     period: str = "day",
     stream: TextIO | None = None,
+    config_context: RuntimeConfigContext | None = None,
+    schedule_date: date | None = None,
 ) -> int:
     output = stream or sys.stdout
     if query is None:
@@ -37,7 +42,14 @@ def run_cli_query(
         output.flush()
         return 0
 
-    config = validate_config(DEFAULT_CONFIG)
+    config_context = config_context or load_config(root)
+    config = config_context.config
+    if query == "schedule":
+        target_date = schedule_date or datetime.now(ZoneInfo(config.schedule.timezone)).date()
+        output.write(_format_schedule(build_watch_schedule(config=config.schedule, target_date=target_date)))
+        output.flush()
+        return 0
+
     sqlite_path = root / config.storage.sqlite_path
     if not sqlite_path.exists():
         output.write(f"query_error=no runtime database\nsqlite_path={sqlite_path}\n")
@@ -179,6 +191,40 @@ def _format_statistics(rows: list[dict[str, object]]) -> str:
             )
         )
     return "\n".join(lines) + "\n"
+
+
+def _format_schedule(schedule: WatchSchedule) -> str:
+    market_day = schedule.market_day
+    lines = [
+        f"schedule_date={market_day.date}",
+        f"timezone={market_day.timezone}",
+        f"trading_day={str(market_day.is_trading_day).lower()}",
+        f"half_day={str(market_day.is_half_day).lower()}",
+    ]
+    if market_day.holiday_name:
+        lines.append(f"market_note={market_day.holiday_name}")
+    if schedule.next_trading_day:
+        lines.append(f"next_trading_day={schedule.next_trading_day.date}")
+    lines.append("kind | local_start | local_end | utc_start | utc_end | strategy_enabled | note")
+    for window in schedule.windows:
+        lines.append(
+            " | ".join(
+                [
+                    window.kind,
+                    _format_dt(window.start_at),
+                    _format_dt(window.end_at),
+                    _format_dt(window.start_utc),
+                    _format_dt(window.end_utc),
+                    str(window.strategy_enabled).lower(),
+                    window.note,
+                ]
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _format_dt(value: datetime) -> str:
+    return value.isoformat().replace("+00:00", "Z")
 
 
 __all__ = ["CliQuery", "run_cli_query"]

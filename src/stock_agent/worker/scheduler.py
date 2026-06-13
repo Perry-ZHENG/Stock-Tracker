@@ -10,6 +10,7 @@ from pathlib import Path
 
 from stock_agent.health import HealthThresholds, record_health_metric
 from stock_agent.tracing import utc_now
+from stock_agent.worker.pipeline import WorkerPipeline, WorkerTickSummary
 
 
 class SingleInstanceLockError(RuntimeError):
@@ -51,6 +52,7 @@ class WorkerRunResult:
     ticks: int
     stopped: bool
     errors: list[str] = field(default_factory=list)
+    summaries: list[WorkerTickSummary] = field(default_factory=list)
 
 
 class Worker:
@@ -67,11 +69,13 @@ class Worker:
         lock_path: Path,
         interval_sec: float = 30,
         thresholds: HealthThresholds | None = None,
+        pipeline: WorkerPipeline | None = None,
     ) -> None:
         self.connection = connection
         self.lock_path = lock_path
         self.interval_sec = interval_sec
         self.thresholds = thresholds or HealthThresholds()
+        self.pipeline = pipeline
         self._stop_requested = False
 
     def request_stop(self) -> None:
@@ -85,12 +89,13 @@ class Worker:
     ) -> WorkerRunResult:
         ticks = 0
         errors: list[str] = []
+        summaries: list[WorkerTickSummary] = []
         with SingleInstanceLock(self.lock_path):
             self.recover_from_crash()
             self.fill_data_gaps()
             while not self._stop_requested:
                 try:
-                    self.tick()
+                    summaries.append(self.tick())
                     ticks += 1
                 except Exception as exc:  # pragma: no cover - safety boundary for future worker jobs
                     errors.append(str(exc))
@@ -107,9 +112,12 @@ class Worker:
                 if once or (max_ticks is not None and ticks >= max_ticks):
                     break
                 time.sleep(self.interval_sec)
-        return WorkerRunResult(ticks=ticks, stopped=self._stop_requested, errors=errors)
+        return WorkerRunResult(ticks=ticks, stopped=self._stop_requested, errors=errors, summaries=summaries)
 
-    def tick(self) -> None:
+    def tick(self) -> WorkerTickSummary:
+        if self.pipeline is not None:
+            return self.pipeline.run_once()
+
         now = utc_now()
         record_health_metric(
             self.connection,
@@ -128,6 +136,7 @@ class Worker:
             now=now,
             thresholds=self.thresholds,
         )
+        return WorkerTickSummary(status="heartbeat", trading_day=True)
 
     def recover_from_crash(self) -> list[str]:
         return []

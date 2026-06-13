@@ -4,16 +4,19 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from stock_agent.schemas import HealthMetric, Signal, TraceChain
+from stock_agent.schemas import HealthMetric, Signal, StrategySnapshot, TraceChain
 from stock_agent.storage.repositories import (
     get_health_metric,
     get_signal,
+    get_strategy_snapshot,
     get_trace_chain,
     insert_health_metric,
     insert_signal,
+    insert_strategy_snapshot,
     insert_trace_chain,
     list_health_metrics,
     list_signals,
+    list_strategy_snapshots,
 )
 from stock_agent.storage.sqlite import REQUIRED_TABLES, initialize_database, initialize_runtime_database
 
@@ -119,6 +122,25 @@ class SqliteStorageTests(unittest.TestCase):
             self.assertIsNotNone(stored)
             self.assertEqual(stored, metric)
             self.assertEqual(list_health_metrics(connection), [metric])
+
+    def test_strategy_snapshot_repository_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            connection = initialize_database(Path(tmp_dir) / "stock_agent.sqlite")
+            snapshot = StrategySnapshot(
+                snapshot_id="snapshot-001",
+                date=datetime(2026, 5, 22, 15, 30, tzinfo=UTC).date(),
+                enabled_strategies=["ma_cross"],
+                strategy_params={"ma_cross": {"pairs": [[3, 5]]}},
+                symbols=["QQQ"],
+                data_policy={"bar_interval": "30m"},
+                watch_window={"timezone": "America/New_York"},
+                created_at=datetime(2026, 5, 22, 15, 30, tzinfo=UTC),
+            )
+
+            insert_strategy_snapshot(connection, snapshot)
+
+            self.assertEqual(get_strategy_snapshot(connection, "snapshot-001"), snapshot)
+            self.assertEqual(list_strategy_snapshots(connection), [snapshot])
 
 
 if __name__ == "__main__":

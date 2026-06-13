@@ -9,7 +9,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
-from stock_agent.schemas import HealthMetric, NewsItem, Signal, TraceChain
+from stock_agent.schemas import HealthMetric, NewsItem, Signal, StrategySnapshot, TraceChain
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
@@ -74,6 +74,52 @@ def list_trace_chain(connection: sqlite3.Connection, limit: int = 50) -> list[Tr
         (limit,),
     ).fetchall()
     return [_model_from_row(TraceChain, row, json_fields=("input_ref", "output_ref")) for row in rows]
+
+
+def insert_strategy_snapshot(connection: sqlite3.Connection, snapshot: StrategySnapshot) -> None:
+    payload = _dump_model(snapshot)
+    connection.execute(
+        """
+        INSERT OR REPLACE INTO strategy_snapshots (
+            snapshot_id, date, enabled_strategies, strategy_params, symbols,
+            data_policy, watch_window, created_at
+        ) VALUES (
+            :snapshot_id, :date, :enabled_strategies, :strategy_params, :symbols,
+            :data_policy, :watch_window, :created_at
+        )
+        """,
+        payload,
+    )
+    connection.commit()
+
+
+def get_strategy_snapshot(connection: sqlite3.Connection, snapshot_id: str) -> StrategySnapshot | None:
+    row = connection.execute(
+        "SELECT * FROM strategy_snapshots WHERE snapshot_id = ?",
+        (snapshot_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _model_from_row(
+        StrategySnapshot,
+        row,
+        json_fields=("enabled_strategies", "strategy_params", "symbols", "data_policy", "watch_window"),
+    )
+
+
+def list_strategy_snapshots(connection: sqlite3.Connection, limit: int = 50) -> list[StrategySnapshot]:
+    rows = connection.execute(
+        "SELECT * FROM strategy_snapshots ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [
+        _model_from_row(
+            StrategySnapshot,
+            row,
+            json_fields=("enabled_strategies", "strategy_params", "symbols", "data_policy", "watch_window"),
+        )
+        for row in rows
+    ]
 
 
 def insert_health_metric(connection: sqlite3.Connection, metric: HealthMetric) -> None:
@@ -154,6 +200,125 @@ def list_notifications(connection: sqlite3.Connection, limit: int = 50) -> list[
         payload["payload"] = json.loads(payload["payload"])
         notifications.append(payload)
     return notifications
+
+
+def get_notification(connection: sqlite3.Connection, notification_id: str) -> dict[str, Any] | None:
+    row = connection.execute(
+        "SELECT * FROM notifications WHERE notification_id = ?",
+        (notification_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    payload = dict(row)
+    payload["payload"] = json.loads(payload["payload"])
+    return payload
+
+
+def list_notifications_by_status(
+    connection: sqlite3.Connection,
+    *,
+    statuses: list[str],
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    if not statuses:
+        return []
+    placeholders = ",".join("?" for _status in statuses)
+    rows = connection.execute(
+        f"""
+        SELECT * FROM notifications
+        WHERE status IN ({placeholders})
+        ORDER BY created_at ASC
+        LIMIT ?
+        """,
+        [*statuses, limit],
+    ).fetchall()
+    notifications = []
+    for row in rows:
+        payload = dict(row)
+        payload["payload"] = json.loads(payload["payload"])
+        notifications.append(payload)
+    return notifications
+
+
+def update_notification_status(
+    connection: sqlite3.Connection,
+    *,
+    notification_id: str,
+    status: str,
+    retry_count: int,
+    error_msg: str | None,
+    updated_at: datetime,
+) -> None:
+    connection.execute(
+        """
+        UPDATE notifications
+        SET status = ?, retry_count = ?, error_msg = ?, updated_at = ?
+        WHERE notification_id = ?
+        """,
+        (
+            status,
+            retry_count,
+            error_msg,
+            updated_at.isoformat().replace("+00:00", "Z"),
+            notification_id,
+        ),
+    )
+    connection.commit()
+
+
+def upsert_checkpoint(
+    connection: sqlite3.Connection,
+    *,
+    checkpoint_id: str,
+    module: str,
+    checkpoint_key: str,
+    checkpoint_value: str,
+    updated_at: datetime,
+) -> None:
+    connection.execute(
+        """
+        INSERT OR REPLACE INTO checkpoints (
+            checkpoint_id, module, checkpoint_key, checkpoint_value, updated_at
+        ) VALUES (
+            :checkpoint_id, :module, :checkpoint_key, :checkpoint_value, :updated_at
+        )
+        """,
+        {
+            "checkpoint_id": checkpoint_id,
+            "module": module,
+            "checkpoint_key": checkpoint_key,
+            "checkpoint_value": checkpoint_value,
+            "updated_at": updated_at.isoformat().replace("+00:00", "Z"),
+        },
+    )
+    connection.commit()
+
+
+def get_checkpoint(connection: sqlite3.Connection, checkpoint_id: str) -> dict[str, Any] | None:
+    row = connection.execute(
+        "SELECT * FROM checkpoints WHERE checkpoint_id = ?",
+        (checkpoint_id,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def list_checkpoints(
+    connection: sqlite3.Connection,
+    *,
+    module: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    if module is None:
+        rows = connection.execute(
+            "SELECT * FROM checkpoints ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            "SELECT * FROM checkpoints WHERE module = ? ORDER BY updated_at DESC LIMIT ?",
+            (module, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def list_config_changes(connection: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:

@@ -15,6 +15,7 @@ from stock_agent.commands.run_demo import run_demo
 from stock_agent.commands.telegram import run_telegram
 from stock_agent.commands.worker import run_worker
 from stock_agent.config import init_config
+from stock_agent.config_loader import load_config
 
 COMMANDS: dict[str, str] = {
     "init-config": "Generate default configs/config.yaml and .env.example.",
@@ -74,25 +75,35 @@ def _handle_init_config(args: argparse.Namespace) -> int:
 
 
 def _handle_run_demo(_args: argparse.Namespace) -> int:
-    run_demo(_runtime_root())
+    root = _runtime_root()
+    run_demo(root, config_context=load_config(root))
     return 0
 
 
 def _handle_health(_args: argparse.Namespace) -> int:
-    result = run_health(_runtime_root())
+    root = _runtime_root()
+    result = run_health(root, config_context=load_config(root))
     return 0 if result.status != "unhealthy" else 1
 
 
 def _handle_telegram(_args: argparse.Namespace) -> int:
-    return run_telegram(_runtime_root())
+    root = _runtime_root()
+    return run_telegram(root, config_context=load_config(root))
 
 
 def _handle_worker(args: argparse.Namespace) -> int:
-    return run_worker(_runtime_root(), once=args.once, interval_sec=args.interval_sec)
+    root = _runtime_root()
+    return run_worker(
+        root,
+        once=args.once,
+        interval_sec=args.interval_sec,
+        config_context=load_config(root),
+    )
 
 
 def _handle_cli_query(args: argparse.Namespace) -> int:
     root = _runtime_root()
+    config_context = load_config(root)
     if args.action in {"review", "approve", "reject"}:
         return run_config_review(
             root,
@@ -100,6 +111,7 @@ def _handle_cli_query(args: argparse.Namespace) -> int:
             change_id=args.change_id,
             limit=args.limit,
             config_path=_runtime_config_path(root),
+            config_context=config_context,
         )
     return run_cli_query(
         root,
@@ -107,6 +119,7 @@ def _handle_cli_query(args: argparse.Namespace) -> int:
         limit=args.limit,
         symbol=args.symbol,
         period=args.period,
+        config_context=config_context,
     )
 
 
@@ -146,7 +159,17 @@ def build_parser() -> argparse.ArgumentParser:
         elif command == "cli":
             subparser.add_argument(
                 "action",
-                choices=("signals", "health", "config-changes", "news", "stats", "review", "approve", "reject"),
+                choices=(
+                    "signals",
+                    "health",
+                    "config-changes",
+                    "news",
+                    "stats",
+                    "schedule",
+                    "review",
+                    "approve",
+                    "reject",
+                ),
                 nargs="?",
                 help="Read-only query or config review action to run.",
             )
