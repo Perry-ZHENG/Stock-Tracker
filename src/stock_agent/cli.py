@@ -8,11 +8,15 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from stock_agent import __version__
+from stock_agent.commands.bars import run_bars_query
 from stock_agent.commands.config_review import run_config_review
 from stock_agent.commands.health import run_health
+from stock_agent.commands.interactive_cli import run_interactive_cli
 from stock_agent.commands.query_cli import run_cli_query
+from stock_agent.commands.replay import run_replay
 from stock_agent.commands.run_demo import run_demo
 from stock_agent.commands.telegram import run_telegram
+from stock_agent.commands.trace import run_trace_query
 from stock_agent.commands.worker import run_worker
 from stock_agent.config import init_config
 from stock_agent.config_loader import load_config
@@ -24,6 +28,7 @@ COMMANDS: dict[str, str] = {
     "telegram": "Start the Telegram bot listener.",
     "worker": "Start background data, strategy, signal, and health workers.",
     "health": "Print current system health and recent errors.",
+    "replay": "Replay historical bars from the lake and recalculate signals.",
 }
 
 
@@ -57,6 +62,16 @@ def _runtime_config_path(root: Path) -> Path | None:
     config_path = os.getenv("STOCK_AGENT_CONFIG")
     if not config_path:
         return None
+    path = Path(config_path).expanduser()
+    if path.is_absolute():
+        return path
+    return root / path
+
+
+def _argument_config_path(root: Path, args: argparse.Namespace) -> Path | None:
+    config_path = getattr(args, "config_path", None)
+    if config_path is None:
+        return _runtime_config_path(root)
     path = Path(config_path).expanduser()
     if path.is_absolute():
         return path
@@ -97,13 +112,31 @@ def _handle_worker(args: argparse.Namespace) -> int:
         root,
         once=args.once,
         interval_sec=args.interval_sec,
-        config_context=load_config(root),
+        config_context=load_config(root, _argument_config_path(root, args)),
     )
 
 
 def _handle_cli_query(args: argparse.Namespace) -> int:
     root = _runtime_root()
     config_context = load_config(root)
+    if args.action is None:
+        return run_interactive_cli(root, config_context=config_context)
+    if args.action == "bars":
+        result = run_bars_query(
+            root,
+            symbol=args.symbol,
+            from_value=args.from_ts,
+            to_value=args.to_ts,
+            config_context=config_context,
+        )
+        return 0 if result.ok else 1
+    if args.action == "trace":
+        result = run_trace_query(
+            root,
+            args.change_id,
+            config_context=config_context,
+        )
+        return 0 if result.ok else 1
     if args.action in {"review", "approve", "reject"}:
         return run_config_review(
             root,
@@ -121,6 +154,20 @@ def _handle_cli_query(args: argparse.Namespace) -> int:
         period=args.period,
         config_context=config_context,
     )
+
+
+def _handle_replay(args: argparse.Namespace) -> int:
+    root = _runtime_root()
+    result = run_replay(
+        root,
+        from_value=args.from_ts,
+        to_value=args.to_ts,
+        symbols=args.symbols or [],
+        persist=args.persist,
+        report_path=args.report,
+        config_context=load_config(root),
+    )
+    return 0 if result.ok else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -166,6 +213,8 @@ def build_parser() -> argparse.ArgumentParser:
                     "news",
                     "stats",
                     "schedule",
+                    "bars",
+                    "trace",
                     "review",
                     "approve",
                     "reject",
@@ -189,6 +238,16 @@ def build_parser() -> argparse.ArgumentParser:
                 help="Optional symbol for news query.",
             )
             subparser.add_argument(
+                "--from",
+                dest="from_ts",
+                help="Inclusive UTC start for bars query, e.g. 2026-05-22T13:30:00Z.",
+            )
+            subparser.add_argument(
+                "--to",
+                dest="to_ts",
+                help="Inclusive UTC end for bars query, e.g. 2026-05-22T20:00:00Z.",
+            )
+            subparser.add_argument(
                 "--period",
                 choices=("day", "month", "year"),
                 default="day",
@@ -209,7 +268,41 @@ def build_parser() -> argparse.ArgumentParser:
                 default=30,
                 help="Seconds between worker ticks.",
             )
+            subparser.add_argument(
+                "--config",
+                dest="config_path",
+                type=Path,
+                help="Runtime config path for this worker invocation.",
+            )
             subparser.set_defaults(handler=_handle_worker)
+        elif command == "replay":
+            subparser.add_argument(
+                "--from",
+                dest="from_ts",
+                help="Inclusive UTC start, e.g. 2026-05-22T13:30:00Z.",
+            )
+            subparser.add_argument(
+                "--to",
+                dest="to_ts",
+                help="Inclusive UTC end, e.g. 2026-05-22T20:00:00Z.",
+            )
+            subparser.add_argument(
+                "--symbols",
+                nargs="+",
+                required=True,
+                help="Symbols to replay, e.g. --symbols QQQ SPY.",
+            )
+            subparser.add_argument(
+                "--persist",
+                action="store_true",
+                help="Persist replay signals and audit traces into SQLite.",
+            )
+            subparser.add_argument(
+                "--report",
+                type=Path,
+                help="Optional regression report path to write as JSON.",
+            )
+            subparser.set_defaults(handler=_handle_replay)
         else:
             subparser.set_defaults(handler=_command_handler(command))
     return parser

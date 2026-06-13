@@ -41,6 +41,7 @@ class WorkerTests(unittest.TestCase):
 
             result = worker.run(once=True)
             metrics = list_health_metrics(connection)
+            connection.close()
 
         self.assertEqual(result.ticks, 1)
         self.assertFalse(result.stopped)
@@ -56,6 +57,7 @@ class WorkerTests(unittest.TestCase):
             exit_code = run_worker(root, once=True, interval_sec=0.01, stream=stream)
             connection = open_database(root / "data/runtime/stock_agent.sqlite")
             metrics = list_health_metrics(connection)
+            connection.close()
 
         self.assertEqual(exit_code, 0)
         self.assertIn("worker_status=completed", stream.getvalue())
@@ -90,6 +92,7 @@ class WorkerTests(unittest.TestCase):
             worker.request_stop()
 
             result = worker.run()
+            connection.close()
 
         self.assertEqual(result.ticks, 0)
         self.assertTrue(result.stopped)
@@ -117,6 +120,7 @@ class WorkerTests(unittest.TestCase):
 
             connection = open_database(root / "custom/runtime.sqlite")
             metrics = list_health_metrics(connection)
+            connection.close()
 
         self.assertEqual(exit_code, 0)
         self.assertIn("worker_status=completed", stream.getvalue())
@@ -142,6 +146,7 @@ class WorkerTests(unittest.TestCase):
             signals = list_signals(connection)
             snapshots = list_strategy_snapshots(connection)
             notifications = list_notifications(connection)
+            connection.close()
             lake_file_exists = (root / "data/lake/raw_bars/date=2026-05-22/part-00000.jsonl").exists()
 
         self.assertEqual(exit_code, 0)
@@ -170,6 +175,7 @@ class WorkerTests(unittest.TestCase):
             second_exit = run_worker(root, once=True, interval_sec=0.01, stream=second_stream)
             connection = open_database(root / "data/runtime/stock_agent.sqlite")
             notifications = list_notifications(connection)
+            connection.close()
 
         self.assertEqual(first_exit, 0)
         self.assertEqual(second_exit, 0)

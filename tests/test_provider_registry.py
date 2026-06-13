@@ -37,6 +37,7 @@ class ProviderRegistryTests(unittest.TestCase):
             traces = list_trace_chain(connection)
             metrics = list_health_metrics(connection)
             notifications = list_notifications(connection)
+            connection.close()
 
         self.assertEqual(result.provider_name, "csv_demo")
         self.assertTrue(result.fallback_used)
@@ -77,6 +78,7 @@ class ProviderRegistryTests(unittest.TestCase):
             traces = list_trace_chain(connection)
             metrics = list_health_metrics(connection)
             notifications = list_notifications(connection)
+            connection.close()
 
         self.assertEqual(traces[0].status, "failed")
         self.assertIn("timeout", traces[0].error_msg or "")
@@ -100,6 +102,7 @@ class ProviderRegistryTests(unittest.TestCase):
                     config=config,
                     connection=connection,
                 ).fetch_intraday_bars(symbols=["QQQ"], interval="30m")
+            connection.close()
 
         self.assertEqual(result.provider_name, "csv_demo")
         self.assertEqual(result.attempts[0].error_type, "configuration")

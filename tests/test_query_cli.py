@@ -21,12 +21,14 @@ class QueryCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn("Available queries", stream.getvalue())
         self.assertIn("stats", stream.getvalue())
+        self.assertIn("trace", stream.getvalue())
 
     def test_queries_recent_signals(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             connection = initialize_runtime_database(root)
             insert_signal(connection, _signal())
+            connection.close()
             stream = io.StringIO()
 
             exit_code = run_cli_query(root, query="signals", stream=stream)
@@ -40,6 +42,7 @@ class QueryCliTests(unittest.TestCase):
             root = Path(tmp_dir)
             connection = initialize_runtime_database(root)
             insert_health_metric(connection, _health_metric())
+            connection.close()
             stream = io.StringIO()
 
             exit_code = run_cli_query(root, query="health", stream=stream)
@@ -90,6 +93,7 @@ class QueryCliTests(unittest.TestCase):
                 ),
             )
             connection.commit()
+            connection.close()
             config_stream = io.StringIO()
             news_stream = io.StringIO()
 
@@ -104,7 +108,7 @@ class QueryCliTests(unittest.TestCase):
     def test_news_query_without_provider_returns_readable_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
-            initialize_runtime_database(root)
+            initialize_runtime_database(root).close()
             stream = io.StringIO()
 
             exit_code = run_cli_query(root, query="news", symbol="QQQ", stream=stream)
@@ -126,6 +130,7 @@ class QueryCliTests(unittest.TestCase):
             root = Path(tmp_dir)
             connection = initialize_runtime_database(root)
             insert_signal(connection, _signal())
+            connection.close()
 
             with patch("pathlib.Path.cwd", return_value=root):
                 self.assertEqual(main(["cli", "signals"]), 0)

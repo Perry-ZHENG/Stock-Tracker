@@ -3,25 +3,14 @@
 from __future__ import annotations
 
 import sys
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Literal, TextIO
-from zoneinfo import ZoneInfo
 
 from stock_agent.config_loader import RuntimeConfigContext, load_config
-from stock_agent.knowledge import generate_signal_statistics, persist_signal_statistics
-from stock_agent.news.service import NewsQueryService
-from stock_agent.scheduler import WatchSchedule, build_watch_schedule
-from stock_agent.storage.repositories import (
-    list_config_changes,
-    list_health_metrics,
-    list_news_items,
-    list_signal_statistics,
-    list_signals,
-)
-from stock_agent.storage.sqlite import open_database
+from stock_agent.query import QueryService
 
-CliQuery = Literal["signals", "health", "config-changes", "news", "stats", "schedule"]
+CliQuery = Literal["signals", "health", "config-changes", "news", "stats", "schedule", "bars"]
 
 
 def run_cli_query(
@@ -34,59 +23,29 @@ def run_cli_query(
     stream: TextIO | None = None,
     config_context: RuntimeConfigContext | None = None,
     schedule_date: date | None = None,
+    from_value: str | None = None,
+    to_value: str | None = None,
 ) -> int:
     output = stream or sys.stdout
     if query is None:
-        output.write("Available queries: signals, health, config-changes, news, stats\n")
-        output.write("Example: stock-agent cli signals --limit 5\n")
+        output.write("Available queries: signals, health, config-changes, news, stats, schedule, bars, trace\n")
+        output.write("Example: stock-agent cli bars --symbol QQQ --from 2026-05-22 --to 2026-05-22\n")
         output.flush()
         return 0
 
     config_context = config_context or load_config(root)
-    config = config_context.config
-    if query == "schedule":
-        target_date = schedule_date or datetime.now(ZoneInfo(config.schedule.timezone)).date()
-        output.write(_format_schedule(build_watch_schedule(config=config.schedule, target_date=target_date)))
-        output.flush()
-        return 0
-
-    sqlite_path = root / config.storage.sqlite_path
-    if not sqlite_path.exists():
-        output.write(f"query_error=no runtime database\nsqlite_path={sqlite_path}\n")
-        output.flush()
-        return 1
-
-    connection = open_database(sqlite_path)
-    if query == "signals":
-        output.write(_format_signals(list_signals(connection, limit=limit)))
-    elif query == "health":
-        output.write(_format_health(list_health_metrics(connection, limit=limit)))
-    elif query == "config-changes":
-        output.write(_format_config_changes(list_config_changes(connection, limit=limit)))
-    elif query == "news":
-        service = NewsQueryService(connection, config=config.news)
-        result = service.query(symbols=[symbol] if symbol else [], limit=limit)
-        if result.ok:
-            output.write(result.message + "\n")
-            output.write(_format_news([item.model_dump(mode="json") for item in result.items]))
-        else:
-            output.write(result.message + "\n")
-            output.write(_format_news(list_news_items(connection, limit=limit)))
-    elif query == "stats":
-        if period not in {"day", "month", "year"}:
-            output.write(f"query_error=unsupported stats period {period}\n")
-            output.flush()
-            return 1
-        statistic = generate_signal_statistics(connection, period=period)  # type: ignore[arg-type]
-        persist_signal_statistics(connection, statistic)
-        output.write(_format_statistics(list_signal_statistics(connection, period=period, limit=limit)))
-    else:
-        output.write(f"query_error=unsupported query {query}\n")
-        output.flush()
-        return 1
-
+    result = QueryService(root, config_context=config_context).execute(
+        query,
+        limit=limit,
+        symbol=symbol,
+        period=period,
+        schedule_date=schedule_date,
+        from_value=from_value,
+        to_value=to_value,
+    )
+    output.write(result.text)
     output.flush()
-    return 0
+    return 0 if result.ok else 1
 
 
 def _format_signals(rows) -> str:

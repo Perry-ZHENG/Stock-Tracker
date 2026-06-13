@@ -1,0 +1,84 @@
+app:
+  name: stock-agent
+  env: regression
+  timezone: America/New_York
+provider:
+  default: csv_demo
+  priority:
+    - csv_demo
+  fallback:
+    enabled: true
+    order:
+      - csv_demo
+  csv_demo:
+    path: data/sample/regression_bars_long.csv
+  live:
+    name: placeholder
+    api_key_env: MARKET_DATA_API_KEY
+symbols:
+  default:
+    - QQQ
+bar:
+  interval: 30m
+  session: regular_only
+  include_pre_market: false
+  include_after_hours: false
+schedule:
+  timezone: America/New_York
+  regular_session_start: 09:30
+  regular_session_end: 16:00
+  premarket_lead_minutes: 60
+  close_focus_window_minutes: 60
+  afterhours_tail_minutes: 60
+strategies:
+  ma_cross:
+    enabled: true
+    pairs:
+      - [2, 3]
+  boll:
+    enabled: true
+    window: 3
+    bandwidth_baseline_window: 2
+  macd:
+    enabled: true
+    fast: 2
+    slow: 3
+    signal: 2
+  kdj:
+    enabled: true
+    window: 3
+    k_smoothing: 2
+    d_smoothing: 2
+  active_j:
+    enabled: true
+    j_threshold: 80.0
+    ma_window: 3
+    kdj_window: 3
+    k_smoothing: 2
+    d_smoothing: 2
+telegram:
+  enabled: false
+  token_env: TELEGRAM_BOT_TOKEN
+  allowed_user_ids: []
+news:
+  enabled: true
+  mode: on_demand
+  provider: placeholder
+  api_key_env: NEWS_API_KEY
+  cache_ttl_minutes: 30
+llm:
+  enabled: false
+  provider: openai
+  model: gpt-4.1-mini
+  api_key_env: OPENAI_API_KEY
+storage:
+  sqlite_path: data/runtime/regression.sqlite
+  parquet_root: data/lake
+  duckdb_path: data/analytics/regression.duckdb
+health:
+  heartbeat_timeout_sec: 300
+  data_delay_degraded_sec: 60
+  data_delay_unhealthy_sec: 300
+  error_rate_degraded: 0.01
+  error_rate_unhealthy: 0.05
+  consecutive_failure_unhealthy: 3

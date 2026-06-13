@@ -57,6 +57,7 @@ class StrategyEnginePipelineTests(unittest.TestCase):
             result = SignalPipeline(config=config, connection=connection).run(bars)
             snapshots = list_strategy_snapshots(connection)
             traces = list_trace_chain(connection)
+            connection.close()
 
         self.assertEqual(len(result.signals), 1)
         self.assertEqual(result.snapshot.enabled_strategies, ["ma_cross"])

@@ -51,15 +51,17 @@ def run_worker(
         output.flush()
         return 0
 
-    output.write("worker_status=stopped\n" if result.stopped else "worker_status=completed\n")
-    output.write(f"ticks={result.ticks}\n")
-    output.write(f"errors={len(result.errors)}\n")
-    if result.summaries:
-        output.write("last_tick_summary:\n")
-        for line in result.summaries[-1].lines():
-            output.write(f"{line}\n")
-    output.flush()
-    return 0 if not result.errors else 1
+        output.write("worker_status=stopped\n" if result.stopped else "worker_status=completed\n")
+        output.write(f"ticks={result.ticks}\n")
+        output.write(f"errors={len(result.errors)}\n")
+        if result.summaries:
+            output.write("last_tick_summary:\n")
+            for line in result.summaries[-1].lines():
+                output.write(f"{line}\n")
+        output.flush()
+        return 0 if not result.errors else 1
+    finally:
+        connection.close()
 
 
 __all__ = ["run_worker"]

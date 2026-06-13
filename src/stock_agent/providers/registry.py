@@ -15,6 +15,7 @@ from uuid import uuid4
 from stock_agent.config import StockAgentConfig
 from stock_agent.health import HealthThresholds, record_health_metric
 from stock_agent.providers.base import MarketDataProvider
+from stock_agent.providers.broker_market_data import BrokerMarketDataProviderError, create_broker_market_data_provider
 from stock_agent.providers.csv_demo import CsvDemoProvider, CsvDemoProviderError
 from stock_agent.providers.live import LiveProviderError, create_live_provider
 from stock_agent.schemas import Bar
@@ -150,7 +151,7 @@ class ProviderRegistry:
                 api_key_env=self.config.provider.live.api_key_env,
             )
         if normalized in {"broker", "broker_market_data"}:
-            raise ProviderRegistryError("broker market data provider is not implemented yet")
+            return create_broker_market_data_provider()
         if normalized in {"cache", "fallback"}:
             raise ProviderRegistryError("cache fallback provider is not implemented yet")
         raise ProviderRegistryError(f"unsupported provider: {provider_name}")
@@ -213,6 +214,8 @@ def _classify_provider_error(exc: Exception) -> ProviderErrorType:
     message = str(exc).lower()
     if isinstance(exc, CsvDemoProviderError):
         return "data"
+    if isinstance(exc, BrokerMarketDataProviderError):
+        return "configuration"
     if isinstance(exc, LiveProviderError) and any(
         token in message for token in ("missing api key", "unsupported", "required")
     ):

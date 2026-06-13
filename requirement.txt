@@ -1,0 +1,10 @@
+# Python >=3.12 is required by pyproject.toml.
+
+# Install this project in editable mode, including runtime dependencies.
+-e .
+
+# Test dependencies used by the validation suite.
+pytest>=8
+
+# Required on Windows for zoneinfo time zones such as America/New_York.
+tzdata>=2025.2; platform_system == "Windows"

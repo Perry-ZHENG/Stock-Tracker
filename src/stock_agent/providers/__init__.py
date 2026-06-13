@@ -1,5 +1,10 @@
 """Market data provider adapters."""
 
+from stock_agent.providers.broker_market_data import (
+    BrokerMarketDataProvider,
+    BrokerMarketDataProviderError,
+    create_broker_market_data_provider,
+)
 from stock_agent.providers.csv_demo import CsvDemoProvider, CsvDemoProviderError
 from stock_agent.providers.live import (
     AlphaVantageProvider,
@@ -16,6 +21,8 @@ from stock_agent.providers.registry import (
 
 __all__ = [
     "AlphaVantageProvider",
+    "BrokerMarketDataProvider",
+    "BrokerMarketDataProviderError",
     "CsvDemoProvider",
     "CsvDemoProviderError",
     "LiveProviderError",
@@ -24,5 +31,6 @@ __all__ = [
     "ProviderFetchResult",
     "ProviderRegistry",
     "ProviderRegistryError",
+    "create_broker_market_data_provider",
     "create_live_provider",
 ]

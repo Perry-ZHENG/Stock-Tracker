@@ -14,9 +14,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from stock_agent.commands.query_cli import run_cli_query
 from stock_agent.config_changes import create_config_change
 from stock_agent.config_loader import RuntimeConfigContext, load_config
+from stock_agent.query import QueryService
 
 TelegramRole = Literal["user", "admin"]
 
@@ -82,13 +82,15 @@ def handle_telegram_message(
         )
     if command in {"/schedule", "schedule"}:
         return _query(root, "schedule", role=role, limit=_limit(parts), config_context=config_context)
+    if command in {"/trace", "trace"}:
+        return _trace(root, role=role, parts=parts, config_context=config_context)
     if command in {"/config", "config"}:
         return _handle_config_request(connection, role=role, parts=parts, config_context=config_context)
 
     return TelegramCommandResult(
         ok=False,
         role=role,
-        message="telegram_error=unsupported command; supported: /signals, /health, /news, /schedule, /config add-symbol SYMBOL",
+        message="telegram_error=unsupported command; supported: /signals, /health, /news, /schedule, /trace, /config add-symbol SYMBOL",
     )
 
 
@@ -101,21 +103,16 @@ def _query(
     symbol: str | None = None,
     config_context: RuntimeConfigContext | None = None,
 ) -> TelegramCommandResult:
-    from io import StringIO
-
-    stream = StringIO()
-    exit_code = run_cli_query(
-        root,
+    result = QueryService(root, config_context=config_context).execute(
         query=query,
         limit=limit,
         symbol=symbol,
-        stream=stream,
-        config_context=config_context,
+        output_format="telegram",
     )  # type: ignore[arg-type]
     return TelegramCommandResult(
-        ok=exit_code == 0,
+        ok=result.ok,
         role=role,
-        message=stream.getvalue().strip(),
+        message=result.text.strip(),
     )
 
 
@@ -165,6 +162,31 @@ def _handle_config_request(
             f"config_change={change['change_id']} status={change['status']} "
             "requires CLI review before apply"
         ),
+    )
+
+
+def _trace(
+    root: Path,
+    *,
+    role: TelegramRole,
+    parts: list[str],
+    config_context: RuntimeConfigContext | None = None,
+) -> TelegramCommandResult:
+    if len(parts) < 2:
+        return TelegramCommandResult(
+            ok=False,
+            role=role,
+            message="telegram_error=usage: /trace SIGNAL_ID|TRACE_ID",
+        )
+    result = QueryService(root, config_context=config_context).execute(
+        "trace",
+        target_id=parts[1],
+        output_format="telegram",
+    )
+    return TelegramCommandResult(
+        ok=result.ok,
+        role=role,
+        message=result.text.strip(),
     )
 
 

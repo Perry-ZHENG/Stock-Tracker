@@ -2,7 +2,10 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from datetime import UTC, datetime
 
+from stock_agent.schemas import Signal, TraceChain
+from stock_agent.storage.repositories import insert_signal, insert_trace_chain
 from stock_agent.commands.telegram import run_telegram
 from stock_agent.storage.repositories import list_config_changes
 from stock_agent.storage.sqlite import initialize_runtime_database
@@ -34,6 +37,7 @@ class TelegramListenerTests(unittest.TestCase):
     def test_rejects_unallowed_user(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             connection = initialize_runtime_database(Path(tmp_dir))
+            connection.close()
 
             result = handle_telegram_message(
                 root=Path(tmp_dir),
@@ -51,6 +55,7 @@ class TelegramListenerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             connection = initialize_runtime_database(root)
+            connection.close()
 
             signals_result = handle_telegram_message(
                 root=root,
@@ -84,10 +89,58 @@ class TelegramListenerTests(unittest.TestCase):
         self.assertTrue(news_result.ok)
         self.assertIn("news:", news_result.message)
 
+    def test_supports_trace_query_for_allowed_user(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            connection = initialize_runtime_database(root)
+            signal = Signal(
+                signal_id="sig-001",
+                strategy_id="ma_cross",
+                symbol="QQQ",
+                timestamp=datetime(2026, 5, 22, 15, 30, tzinfo=UTC),
+                direction="buy_watch",
+                strength=0.7,
+                confidence=0.8,
+                reason="MA3 crossed above MA5",
+                trace_id="trace-sig-001",
+                source_bar_ids=["bar-001", "bar-002"],
+                data_quality="normal",
+                created_at=datetime(2026, 5, 22, 15, 30, tzinfo=UTC),
+            )
+            insert_signal(connection, signal)
+            insert_trace_chain(
+                connection,
+                TraceChain(
+                    trace_id=signal.trace_id,
+                    parent_id=None,
+                    module="strategy_engine",
+                    input_ref=signal.source_bar_ids,
+                    output_ref=[signal.signal_id],
+                    status="success",
+                    error_msg=None,
+                    created_at=signal.created_at,
+                ),
+            )
+            connection.close()
+
+            result = handle_telegram_message(
+                root=root,
+                connection=connection,
+                user_id=1,
+                text="/trace sig-001",
+                allowed_user_ids=[1],
+                admin_user_ids=[],
+            )
+
+        self.assertTrue(result.ok)
+        self.assertIn("trace_status=ok", result.message)
+        self.assertIn("source_bar_ids=bar-001,bar-002", result.message)
+
     def test_user_cannot_create_config_change(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             connection = initialize_runtime_database(root)
+            connection.close()
 
             result = handle_telegram_message(
                 root=root,
@@ -115,6 +168,7 @@ class TelegramListenerTests(unittest.TestCase):
                 admin_user_ids=[2],
             )
             changes = list_config_changes(connection)
+            connection.close()
 
         self.assertTrue(result.ok)
         self.assertEqual(len(changes), 1)
