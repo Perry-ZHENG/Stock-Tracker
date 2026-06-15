@@ -10,7 +10,7 @@ from stock_agent.schemas import StrictSchema
 
 IntentRisk = Literal["read_only", "pending_change", "local_admin", "high_risk_blocked"]
 IntentSource = Literal["cli", "telegram", "llm", "structured_parser", "test"]
-ReadOnlyQuery = Literal["signals", "health", "bars", "news", "stats", "trace", "schedule"]
+ReadOnlyQuery = Literal["signals", "health", "bars", "news", "stats", "trace", "schedule", "provider-compare", "abnormal-bars"]
 PendingChangeAction = Literal[
     "add_symbol",
     "remove_symbol",
@@ -25,6 +25,7 @@ BlockedAction = Literal[
     "cancel_order",
     "transfer_funds",
     "withdraw_funds",
+    "read_secret",
     "change_password",
     "change_account",
     "unknown_high_risk",

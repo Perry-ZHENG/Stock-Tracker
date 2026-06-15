@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
@@ -17,6 +16,7 @@ from pydantic import ValidationError
 from stock_agent.bars.validation import generate_bar_id
 from stock_agent.providers.base import MarketDataProvider
 from stock_agent.schemas import Bar
+from stock_agent.security import SecretNotFound, load_secret_from_env, redact_sensitive
 
 EASTERN = ZoneInfo("America/New_York")
 HttpGet = Callable[[str, dict[str, str]], dict[str, Any]]
@@ -68,10 +68,11 @@ class AlphaVantageProvider(MarketDataProvider):
         *,
         http_get: HttpGet | None = None,
     ) -> "AlphaVantageProvider":
-        api_key = os.getenv(api_key_env)
-        if not api_key:
+        try:
+            secret = load_secret_from_env(api_key_env)
+        except SecretNotFound:
             raise LiveProviderError(f"missing API key env {api_key_env}")
-        return cls(api_key=api_key, http_get=http_get)
+        return cls(api_key=secret.value, http_get=http_get)
 
     def fetch_intraday_bars(
         self,
@@ -116,12 +117,12 @@ class AlphaVantageProvider(MarketDataProvider):
         ]
 
     def fetch_provider_health(self) -> dict[str, str | int | float]:
-        return {
+        return redact_sensitive({
             "provider": self.source,
             "status": "configured",
             "rate_limit_policy": self.limits.rate_limit_policy,
             "latency_policy": self.limits.latency_policy,
-        }
+        })
 
 
 def create_live_provider(

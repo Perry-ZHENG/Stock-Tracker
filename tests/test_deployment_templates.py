@@ -54,6 +54,19 @@ class DeploymentTemplateTests(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, combined)
 
+    def test_templates_and_docs_include_dry_run_validation(self) -> None:
+        combined = "\n".join(
+            [
+                (self.root / "deploy/launchd/com.example.stock-agent.worker.plist").read_text(encoding="utf-8"),
+                (self.root / "deploy/systemd/stock-agent-worker.service").read_text(encoding="utf-8"),
+                (self.root / "deploy/pm2/ecosystem.config.cjs").read_text(encoding="utf-8"),
+                (self.root / "docs/deployment.md").read_text(encoding="utf-8"),
+            ]
+        )
+
+        self.assertIn("deploy-validate", combined)
+        self.assertIn("dry-run validation", combined)
+
 
 if __name__ == "__main__":
     unittest.main()

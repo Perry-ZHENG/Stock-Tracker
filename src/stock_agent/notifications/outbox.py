@@ -16,6 +16,7 @@ from stock_agent.storage.repositories import (
     list_notifications_by_status,
     update_notification_status,
 )
+from stock_agent.supervisor.message_safety import review_outbound_message
 from stock_agent.tracing import utc_now
 
 OUTBOX_RETRYABLE_STATUSES = ("pending", "failed")
@@ -45,8 +46,9 @@ class OutboxDispatchResult:
 
 
 class NotificationOutbox:
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(self, connection: sqlite3.Connection, *, instance_id: str | None = None) -> None:
         self.connection = connection
+        self.instance_id = instance_id
 
     def enqueue_signals(
         self,
@@ -65,21 +67,28 @@ class NotificationOutbox:
                     existing += 1
                     continue
                 now = utc_now()
+                safety = review_outbound_message(group.message)
                 insert_notification(
                     self.connection,
                     notification_id=notification_id,
                     channel=channel,
-                    status="pending",
+                    status="suppressed" if safety.suppressed else "pending",
                     payload={
                         "type": "signal_alert",
                         "symbol": group.symbol,
                         "timestamp": group.timestamp,
                         "signal_ids": group.signal_ids,
-                        "message": group.message,
+                        "message": safety.text,
+                        "message_safety": {
+                            "ok": safety.ok,
+                            "suppressed": safety.suppressed,
+                            "violations": safety.violations,
+                        },
+                        "instance_id": self.instance_id,
                         "signals": [signal.model_dump(mode="json") for signal in group.signals],
                     },
                     retry_count=0,
-                    error_msg=None,
+                    error_msg="message suppressed by safety review" if safety.suppressed else None,
                     created_at=now,
                     updated_at=now,
                 )

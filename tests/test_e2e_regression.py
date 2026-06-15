@@ -48,12 +48,12 @@ class EndToEndRegressionTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.assertIn("worker_status=completed", completed.stdout)
-        self.assertIn("approved_signals=35", completed.stdout)
+        self.assertIn("approved_signals=36", completed.stdout)
         self.assertEqual(
             Counter(signal.strategy_id for signal in signals),
             {
-                "active_j": 8,
-                "boll": 1,
+                "active_j": 7,
+                "boll": 3,
                 "kdj": 9,
                 "ma_cross": 9,
                 "macd": 8,

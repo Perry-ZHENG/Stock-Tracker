@@ -12,6 +12,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from stock_agent.schemas import Bar, NewsItem, Signal
+from stock_agent.security import redact_sensitive
 
 LakeDataset = Literal["raw_bars", "features", "signals", "news"]
 
@@ -59,7 +60,7 @@ class LakeWriter:
         *,
         partition_date: date,
     ) -> LakeWriteResult:
-        records = [model.model_dump(mode="json") for model in models]
+        records = [redact_sensitive(model.model_dump(mode="json")) for model in models]
         return self._write_records(dataset, records, partition_date=partition_date)
 
     def _write_records(
@@ -73,8 +74,8 @@ class LakeWriter:
         partition_dir.mkdir(parents=True, exist_ok=True)
 
         if _parquet_available():
-            return _write_parquet(dataset, partition_dir, records)
-        return _write_jsonl(dataset, partition_dir, records)
+            return _write_parquet(dataset, partition_dir, [redact_sensitive(record) for record in records])
+        return _write_jsonl(dataset, partition_dir, [redact_sensitive(record) for record in records])
 
 
 def _write_jsonl(

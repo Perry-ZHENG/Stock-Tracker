@@ -33,6 +33,7 @@ class SqliteStorageTests(unittest.TestCase):
             }
 
             self.assertTrue(set(REQUIRED_TABLES).issubset(table_names))
+            connection.close()
 
     def test_open_database_ensures_tables_for_existing_runtime_db(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -48,6 +49,7 @@ class SqliteStorageTests(unittest.TestCase):
             }
 
             self.assertIn("signal_statistics", table_names)
+            connection.close()
 
     def test_initialize_runtime_database_uses_default_demo_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -56,6 +58,7 @@ class SqliteStorageTests(unittest.TestCase):
 
             self.assertTrue((root / "data" / "runtime" / "stock_agent.sqlite").exists())
             self.assertIsInstance(connection, sqlite3.Connection)
+            connection.close()
 
     def test_signal_repository_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -81,6 +84,7 @@ class SqliteStorageTests(unittest.TestCase):
             self.assertIsNotNone(stored)
             self.assertEqual(stored, signal)
             self.assertEqual(list_signals(connection), [signal])
+            connection.close()
 
     def test_trace_chain_repository_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -99,6 +103,7 @@ class SqliteStorageTests(unittest.TestCase):
             insert_trace_chain(connection, trace)
 
             self.assertEqual(get_trace_chain(connection, "trace-001"), trace)
+            connection.close()
 
     def test_health_metric_repository_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -122,6 +127,7 @@ class SqliteStorageTests(unittest.TestCase):
             self.assertIsNotNone(stored)
             self.assertEqual(stored, metric)
             self.assertEqual(list_health_metrics(connection), [metric])
+            connection.close()
 
     def test_strategy_snapshot_repository_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -141,6 +147,7 @@ class SqliteStorageTests(unittest.TestCase):
 
             self.assertEqual(get_strategy_snapshot(connection, "snapshot-001"), snapshot)
             self.assertEqual(list_strategy_snapshots(connection), [snapshot])
+            connection.close()
 
 
 if __name__ == "__main__":

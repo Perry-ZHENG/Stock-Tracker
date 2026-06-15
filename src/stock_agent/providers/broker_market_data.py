@@ -9,6 +9,7 @@ from typing import Literal
 from stock_agent.broker import BrokerAdapter
 from stock_agent.providers.base import MarketDataProvider
 from stock_agent.schemas import Bar
+from stock_agent.security import redact_sensitive
 
 BrokerEnvironment = Literal["sandbox", "paper", "live"]
 
@@ -34,18 +35,23 @@ class BrokerMarketDataProvider(MarketDataProvider):
             raise BrokerMarketDataProviderError(f"broker market data provider is not configured; environment={self.environment}")
         if self.environment == "live":
             raise BrokerMarketDataProviderError("live broker market data is disabled by default")
+        if self.adapter.capabilities.has_trading_or_mutation_permissions:
+            raise BrokerMarketDataProviderError(
+                "broker adapter declares trading or account mutation permissions; broker provider is disabled by default"
+            )
         if not self.adapter.capabilities.market_data:
             raise BrokerMarketDataProviderError("broker adapter does not declare market_data capability")
         bars = self.adapter.fetch_market_data(symbols=symbols, interval=interval, start=start, end=end)
         return [Bar.model_validate(bar.model_dump(mode="json")) for bar in bars]
 
     def fetch_provider_health(self) -> dict[str, str | int | float]:
-        return {
+        return redact_sensitive({
             "provider": "broker_market_data",
             "environment": self.environment,
             "enabled": int(self.enabled),
             "market_data_capability": int(self.adapter.capabilities.market_data),
-        }
+            "trading_permissions_detected": int(self.adapter.capabilities.has_trading_or_mutation_permissions),
+        })
 
 
 def create_broker_market_data_provider(

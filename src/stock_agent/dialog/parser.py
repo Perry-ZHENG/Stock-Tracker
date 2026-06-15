@@ -29,6 +29,7 @@ _HIGH_RISK_PATTERNS: list[tuple[BlockedAction, tuple[str, ...]]] = [
     ("cancel_order", ("cancel order", "撤单", "取消订单")),
     ("transfer_funds", ("transfer", "转账")),
     ("withdraw_funds", ("withdraw", "出金", "提现")),
+    ("read_secret", ("api key", "apikey", "token", "secret", "credential", "密钥", "令牌", "凭证")),
     ("change_password", ("password", "改密码", "修改密码")),
     ("change_account", ("account", "账户变更", "改账户")),
 ]
@@ -70,6 +71,8 @@ def parse_structured_command(text: str, *, source: IntentSource = "structured_pa
         _parse_stats,
         _parse_news,
         _parse_health,
+        _parse_provider_compare,
+        _parse_abnormal_bars,
         _parse_schedule,
         _parse_signals,
     ):
@@ -157,6 +160,18 @@ def _parse_stats(text: str) -> dict[str, object] | None:
 def _parse_schedule(text: str) -> dict[str, object] | None:
     if text in {"schedule", "show schedule"}:
         return {"intent_type": "read_only", "query": "schedule"}
+    return None
+
+
+def _parse_provider_compare(text: str) -> dict[str, object] | None:
+    if text in {"provider compare", "provider-compare", "show provider compare", "show provider-compare"}:
+        return {"intent_type": "read_only", "query": "provider-compare"}
+    return None
+
+
+def _parse_abnormal_bars(text: str) -> dict[str, object] | None:
+    if text in {"abnormal bars", "abnormal-bars", "show abnormal bars", "show abnormal-bars"}:
+        return {"intent_type": "read_only", "query": "abnormal-bars"}
     return None
 
 

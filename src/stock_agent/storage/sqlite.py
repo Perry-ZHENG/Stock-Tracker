@@ -17,6 +17,8 @@ REQUIRED_TABLES = (
     "news_items",
     "signal_statistics",
     "strategy_snapshots",
+    "security_audit",
+    "abnormal_bars",
 )
 
 
@@ -151,6 +153,34 @@ def _create_tables(connection: sqlite3.Connection) -> None:
             data_policy TEXT NOT NULL,
             watch_window TEXT NOT NULL,
             created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS security_audit (
+            audit_id TEXT PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            source TEXT NOT NULL,
+            actor_ref TEXT,
+            action TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            raw_text TEXT,
+            details TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS abnormal_bars (
+            quarantine_id TEXT PRIMARY KEY,
+            bar_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            window TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            status TEXT NOT NULL,
+            bar_payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            reviewed_by TEXT,
+            review_note TEXT
         );
         """
     )

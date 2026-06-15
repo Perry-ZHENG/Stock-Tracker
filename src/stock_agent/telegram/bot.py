@@ -15,6 +15,7 @@ from stock_agent.config_loader import RuntimeConfigContext, load_config
 from stock_agent.dialog.intents import ClarificationIntent, HighRiskBlockedIntent, PendingChangeIntent, ReadOnlyIntent
 from stock_agent.dialog.llm_parser import LlmParser
 from stock_agent.query import QueryService
+from stock_agent.security.trading_firewall import TradingActionFirewall
 from stock_agent.telegram.listener import TelegramCommandResult, handle_telegram_message, resolve_telegram_role
 
 
@@ -82,6 +83,8 @@ class TelegramBot:
             "health",
             "news",
             "schedule",
+            "provider-compare",
+            "abnormal-bars",
             "trace",
             "config",
         }:
@@ -126,7 +129,12 @@ class TelegramBot:
                 text=f"config_change={change_id} status=pending_review requires CLI review before apply",
             )
         if isinstance(intent, HighRiskBlockedIntent):
-            return TelegramOutboundMessage(ok=False, chat_id=update.chat_id, role=role, text=intent.safety_message)
+            decision = TradingActionFirewall(self.connection).inspect_intent(
+                intent,
+                source="telegram",
+                actor_ref=f"user:{update.user_id}:chat:{update.chat_id}",
+            )
+            return TelegramOutboundMessage(ok=False, chat_id=update.chat_id, role=role, text=decision.message)
         if isinstance(intent, ClarificationIntent):
             return TelegramOutboundMessage(ok=False, chat_id=update.chat_id, role=role, text=f"{intent.question}\nexamples: {', '.join(intent.candidates)}")
         return TelegramOutboundMessage(ok=False, chat_id=update.chat_id, role=role, text="telegram_error=unsupported intent")

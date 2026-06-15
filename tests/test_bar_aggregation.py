@@ -78,6 +78,7 @@ class BarAggregationTests(unittest.TestCase):
             )
 
             checkpoint = get_checkpoint(connection, checkpoint_id(symbol="QQQ", interval="30m"))
+            connection.close()
 
         self.assertIsNotNone(checkpoint)
         self.assertEqual(checkpoint["checkpoint_value"], "2026-05-22T14:00:00Z")

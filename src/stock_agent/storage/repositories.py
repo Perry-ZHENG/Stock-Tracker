@@ -6,10 +6,12 @@ import json
 import sqlite3
 from datetime import datetime
 from typing import Any, TypeVar
+from uuid import uuid4
 
 from pydantic import BaseModel
 
 from stock_agent.schemas import HealthMetric, NewsItem, Signal, StrategySnapshot, TraceChain
+from stock_agent.security import redact_sensitive, redact_text
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
@@ -179,9 +181,9 @@ def insert_notification(
             "notification_id": notification_id,
             "channel": channel,
             "status": status,
-            "payload": json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            "payload": json.dumps(redact_sensitive(payload), ensure_ascii=False, sort_keys=True),
             "retry_count": retry_count,
-            "error_msg": error_msg,
+            "error_msg": redact_text(error_msg),
             "created_at": created_at.isoformat().replace("+00:00", "Z"),
             "updated_at": updated_at.isoformat().replace("+00:00", "Z"),
         },
@@ -354,9 +356,9 @@ def insert_config_change(
             "change_id": change_id,
             "status": status,
             "source": source,
-            "before_config": json.dumps(before_config, ensure_ascii=False, sort_keys=True),
-            "after_config": json.dumps(after_config, ensure_ascii=False, sort_keys=True),
-            "diff": diff,
+            "before_config": json.dumps(redact_sensitive(before_config), ensure_ascii=False, sort_keys=True),
+            "after_config": json.dumps(redact_sensitive(after_config), ensure_ascii=False, sort_keys=True),
+            "diff": redact_text(diff),
             "created_at": created_at.isoformat().replace("+00:00", "Z"),
             "updated_at": updated_at.isoformat().replace("+00:00", "Z"),
         },
@@ -487,7 +489,7 @@ def insert_signal_statistic(
             "trigger_count": trigger_count,
             "run_count": run_count,
             "hit_count": hit_count,
-            "details": json.dumps(details, ensure_ascii=False, sort_keys=True),
+            "details": json.dumps(redact_sensitive(details), ensure_ascii=False, sort_keys=True),
         },
     )
     connection.commit()
@@ -517,9 +519,157 @@ def list_signal_statistics(
     return [_signal_statistic_from_row(row) for row in rows]
 
 
+def insert_security_audit(
+    connection: sqlite3.Connection,
+    *,
+    timestamp: datetime,
+    source: str,
+    actor_ref: str | None,
+    action: str,
+    decision: str,
+    reason: str,
+    raw_text: str | None,
+    details: dict[str, Any] | None = None,
+    audit_id: str | None = None,
+) -> str:
+    resolved_audit_id = audit_id or f"audit-{uuid4().hex[:12]}"
+    connection.execute(
+        """
+        INSERT OR REPLACE INTO security_audit (
+            audit_id, timestamp, source, actor_ref, action, decision, reason, raw_text, details
+        ) VALUES (
+            :audit_id, :timestamp, :source, :actor_ref, :action, :decision, :reason, :raw_text, :details
+        )
+        """,
+        {
+            "audit_id": resolved_audit_id,
+            "timestamp": timestamp.isoformat().replace("+00:00", "Z"),
+            "source": source,
+            "actor_ref": redact_text(actor_ref),
+            "action": action,
+            "decision": decision,
+            "reason": redact_text(reason) or "",
+            "raw_text": redact_text(raw_text),
+            "details": json.dumps(redact_sensitive(details or {}), ensure_ascii=False, sort_keys=True),
+        },
+    )
+    connection.commit()
+    return resolved_audit_id
+
+
+def list_security_audit(connection: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        "SELECT * FROM security_audit ORDER BY timestamp DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    audit_rows = []
+    for row in rows:
+        payload = dict(row)
+        payload["details"] = json.loads(payload["details"])
+        audit_rows.append(payload)
+    return audit_rows
+
+
+def insert_abnormal_bar(
+    connection: sqlite3.Connection,
+    *,
+    quarantine_id: str,
+    bar_id: str,
+    symbol: str,
+    timestamp: datetime,
+    window: str,
+    reason: str,
+    severity: str,
+    status: str,
+    bar_payload: dict[str, Any],
+    created_at: datetime,
+    updated_at: datetime,
+    reviewed_by: str | None = None,
+    review_note: str | None = None,
+) -> None:
+    connection.execute(
+        """
+        INSERT OR REPLACE INTO abnormal_bars (
+            quarantine_id, bar_id, symbol, timestamp, window, reason, severity, status,
+            bar_payload, created_at, updated_at, reviewed_by, review_note
+        ) VALUES (
+            :quarantine_id, :bar_id, :symbol, :timestamp, :window, :reason, :severity, :status,
+            :bar_payload, :created_at, :updated_at, :reviewed_by, :review_note
+        )
+        """,
+        {
+            "quarantine_id": quarantine_id,
+            "bar_id": bar_id,
+            "symbol": symbol,
+            "timestamp": timestamp.isoformat().replace("+00:00", "Z"),
+            "window": window,
+            "reason": redact_text(reason) or "",
+            "severity": severity,
+            "status": status,
+            "bar_payload": json.dumps(redact_sensitive(bar_payload), ensure_ascii=False, sort_keys=True),
+            "created_at": created_at.isoformat().replace("+00:00", "Z"),
+            "updated_at": updated_at.isoformat().replace("+00:00", "Z"),
+            "reviewed_by": redact_text(reviewed_by),
+            "review_note": redact_text(review_note),
+        },
+    )
+    connection.commit()
+
+
+def list_abnormal_bars(
+    connection: sqlite3.Connection,
+    *,
+    status: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    if status is None:
+        rows = connection.execute(
+            "SELECT * FROM abnormal_bars ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            "SELECT * FROM abnormal_bars WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+            (status, limit),
+        ).fetchall()
+    return [_abnormal_bar_from_row(row) for row in rows]
+
+
+def update_abnormal_bar_status(
+    connection: sqlite3.Connection,
+    *,
+    quarantine_id: str,
+    status: str,
+    reviewed_by: str,
+    review_note: str | None,
+    updated_at: datetime,
+) -> None:
+    connection.execute(
+        """
+        UPDATE abnormal_bars
+        SET status = ?, reviewed_by = ?, review_note = ?, updated_at = ?
+        WHERE quarantine_id = ?
+        """,
+        (
+            status,
+            redact_text(reviewed_by),
+            redact_text(review_note),
+            updated_at.isoformat().replace("+00:00", "Z"),
+            quarantine_id,
+        ),
+    )
+    connection.commit()
+
+
 def _signal_statistic_from_row(row: sqlite3.Row) -> dict[str, Any]:
     payload = dict(row)
     payload["details"] = json.loads(payload["details"])
+    return payload
+
+
+def _abnormal_bar_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    payload = dict(row)
+    payload["bar_payload"] = json.loads(payload["bar_payload"])
     return payload
 
 
@@ -531,7 +681,7 @@ def _config_change_from_row(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _dump_model(model: BaseModel) -> dict[str, Any]:
-    payload = model.model_dump(mode="json")
+    payload = redact_sensitive(model.model_dump(mode="json"))
     for key, value in list(payload.items()):
         if isinstance(value, (dict, list)):
             payload[key] = json.dumps(value, ensure_ascii=False, sort_keys=True)

@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from stock_agent.schemas import Bar, StrictSchema
+from stock_agent.security import redact_sensitive
 
 
 class BrokerActionBlocked(PermissionError):
@@ -23,6 +24,17 @@ class BrokerCapabilities(StrictSchema):
     order_modification: bool = False
     withdrawal: bool = False
     account_mutation: bool = False
+
+    @property
+    def has_trading_or_mutation_permissions(self) -> bool:
+        return any(
+            [
+                self.order_placement,
+                self.order_modification,
+                self.withdrawal,
+                self.account_mutation,
+            ]
+        )
 
 
 class AccountSnapshot(StrictSchema):
@@ -49,6 +61,11 @@ class BrokerHealth(StrictSchema):
     status: Literal["healthy", "degraded", "unhealthy"]
     checked_at: datetime
     details: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("details")
+    @classmethod
+    def _redact_details(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return redact_sensitive(value)
 
 
 class BrokerAdapter:

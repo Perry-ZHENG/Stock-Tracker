@@ -10,7 +10,9 @@ from pathlib import Path
 
 from stock_agent.health import HealthThresholds, record_health_metric
 from stock_agent.tracing import utc_now
+from stock_agent.worker.identity import WorkerIdentity, build_worker_identity
 from stock_agent.worker.pipeline import WorkerPipeline, WorkerTickSummary
+from stock_agent.worker.recovery import CrashBudgetExceeded, CrashRecoveryManager
 
 
 class SingleInstanceLockError(RuntimeError):
@@ -18,15 +20,25 @@ class SingleInstanceLockError(RuntimeError):
 
 
 class SingleInstanceLock:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, identity: WorkerIdentity | None = None) -> None:
         self.path = path
+        self.identity = identity or build_worker_identity()
         self._fd: int | None = None
 
     def acquire(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             self._fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(self._fd, str(os.getpid()).encode("utf-8"))
+            os.write(
+                self._fd,
+                (
+                    f"pid={os.getpid()}\n"
+                    f"host_id={self.identity.host_id}\n"
+                    f"instance_id={self.identity.instance_id}\n"
+                    f"lock_owner={self.identity.lock_owner()}\n"
+                    f"multi_instance_enabled={str(self.identity.multi_instance_enabled).lower()}\n"
+                ).encode("utf-8"),
+            )
         except FileExistsError as exc:
             raise SingleInstanceLockError(f"worker lock already exists: {self.path}") from exc
 
@@ -70,12 +82,16 @@ class Worker:
         interval_sec: float = 30,
         thresholds: HealthThresholds | None = None,
         pipeline: WorkerPipeline | None = None,
+        recovery_manager: CrashRecoveryManager | None = None,
+        identity: WorkerIdentity | None = None,
     ) -> None:
         self.connection = connection
         self.lock_path = lock_path
         self.interval_sec = interval_sec
         self.thresholds = thresholds or HealthThresholds()
         self.pipeline = pipeline
+        self.recovery_manager = recovery_manager or CrashRecoveryManager(connection)
+        self.identity = identity or build_worker_identity()
         self._stop_requested = False
 
     def request_stop(self) -> None:
@@ -90,15 +106,25 @@ class Worker:
         ticks = 0
         errors: list[str] = []
         summaries: list[WorkerTickSummary] = []
-        with SingleInstanceLock(self.lock_path):
-            self.recover_from_crash()
+        with SingleInstanceLock(self.lock_path, identity=self.identity):
+            try:
+                self.recover_from_crash()
+            except CrashBudgetExceeded as exc:
+                errors.append(str(exc))
+                return WorkerRunResult(ticks=ticks, stopped=True, errors=errors, summaries=summaries)
             self.fill_data_gaps()
             while not self._stop_requested:
                 try:
                     summaries.append(self.tick())
+                    self.recovery_manager.reset_after_success()
                     ticks += 1
                 except Exception as exc:  # pragma: no cover - safety boundary for future worker jobs
                     errors.append(str(exc))
+                    try:
+                        self.recovery_manager.record_crash(str(exc))
+                    except CrashBudgetExceeded as budget_exc:
+                        errors.append(str(budget_exc))
+                        self._stop_requested = True
                     record_health_metric(
                         self.connection,
                         module="worker",
@@ -106,7 +132,7 @@ class Worker:
                         error_rate=1,
                         consecutive_failures=len(errors),
                         core_module_running=True,
-                        details={"error": str(exc)},
+                details={"error": str(exc)},
                         thresholds=self.thresholds,
                     )
                 if once or (max_ticks is not None and ticks >= max_ticks):
@@ -132,6 +158,10 @@ class Worker:
                 "loop": "skeleton",
                 "crash_recovery": "placeholder",
                 "gap_fill": "placeholder",
+                "instance_id": self.identity.instance_id,
+                "host_id": self.identity.host_id,
+                "lock_owner": self.identity.lock_owner(),
+                "multi_instance_enabled": self.identity.multi_instance_enabled,
             },
             now=now,
             thresholds=self.thresholds,
@@ -139,6 +169,10 @@ class Worker:
         return WorkerTickSummary(status="heartbeat", trading_day=True)
 
     def recover_from_crash(self) -> list[str]:
+        state = self.recovery_manager.state()
+        if state.crash_count > 0 or state.last_failure:
+            self.recovery_manager.record_recovery_attempt(state.last_failure)
+            return [state.last_failure or "previous worker crash"]
         return []
 
     def fill_data_gaps(self) -> list[str]:

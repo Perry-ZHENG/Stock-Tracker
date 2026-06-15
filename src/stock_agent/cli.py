@@ -10,10 +10,12 @@ from pathlib import Path
 from stock_agent import __version__
 from stock_agent.commands.bars import run_bars_query
 from stock_agent.commands.config_review import run_config_review
+from stock_agent.commands.deploy_validate import run_deploy_validate
 from stock_agent.commands.health import run_health
 from stock_agent.commands.interactive_cli import run_interactive_cli
 from stock_agent.commands.query_cli import run_cli_query
 from stock_agent.commands.replay import run_replay
+from stock_agent.commands.retention import run_retention
 from stock_agent.commands.run_demo import run_demo
 from stock_agent.commands.telegram import run_telegram
 from stock_agent.commands.trace import run_trace_query
@@ -29,6 +31,8 @@ COMMANDS: dict[str, str] = {
     "worker": "Start background data, strategy, signal, and health workers.",
     "health": "Print current system health and recent errors.",
     "replay": "Replay historical bars from the lake and recalculate signals.",
+    "deploy-validate": "Run offline deployment dry-run validation.",
+    "retention": "Review data retention actions; executes only with --execute.",
 }
 
 
@@ -95,9 +99,9 @@ def _handle_run_demo(_args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_health(_args: argparse.Namespace) -> int:
+def _handle_health(args: argparse.Namespace) -> int:
     root = _runtime_root()
-    result = run_health(root, config_context=load_config(root))
+    result = run_health(root, config_context=load_config(root), verbose=args.verbose)
     return 0 if result.status != "unhealthy" else 1
 
 
@@ -170,6 +174,18 @@ def _handle_replay(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def _handle_deploy_validate(_args: argparse.Namespace) -> int:
+    root = _runtime_root()
+    result = run_deploy_validate(root, config_context=load_config(root))
+    return 0 if result.ok else 1
+
+
+def _handle_retention(args: argparse.Namespace) -> int:
+    root = _runtime_root()
+    result = run_retention(root, execute=args.execute, config_context=load_config(root))
+    return 0 if result.ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     # build the argument parser with subcommands and their handlers
     parser = argparse.ArgumentParser(
@@ -202,6 +218,11 @@ def build_parser() -> argparse.ArgumentParser:
         elif command == "run-demo":
             subparser.set_defaults(handler=_handle_run_demo)
         elif command == "health":
+            subparser.add_argument(
+                "--verbose",
+                action="store_true",
+                help="Print module-level observability details.",
+            )
             subparser.set_defaults(handler=_handle_health)
         elif command == "cli":
             subparser.add_argument(
@@ -213,6 +234,8 @@ def build_parser() -> argparse.ArgumentParser:
                     "news",
                     "stats",
                     "schedule",
+                    "provider-compare",
+                    "abnormal-bars",
                     "bars",
                     "trace",
                     "review",
@@ -303,6 +326,15 @@ def build_parser() -> argparse.ArgumentParser:
                 help="Optional regression report path to write as JSON.",
             )
             subparser.set_defaults(handler=_handle_replay)
+        elif command == "deploy-validate":
+            subparser.set_defaults(handler=_handle_deploy_validate)
+        elif command == "retention":
+            subparser.add_argument(
+                "--execute",
+                action="store_true",
+                help="Apply reviewed retention actions. Without this flag the command is dry-run only.",
+            )
+            subparser.set_defaults(handler=_handle_retention)
         else:
             subparser.set_defaults(handler=_command_handler(command))
     return parser

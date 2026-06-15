@@ -95,13 +95,13 @@ class SupervisorChecksTests(unittest.TestCase):
             )
 
             stored_traces = list_trace_chain(connection)
+            connection.close()
 
         self.assertFalse(result.ok)
         self.assertEqual(result.approved_signals, [])
         self.assertIn("bar validation failed", "; ".join(result.errors))
-        self.assertEqual(len(stored_traces), 1)
-        self.assertEqual(stored_traces[0].status, "failed")
-        self.assertEqual(stored_traces[0].module, "supervisor")
+        self.assertTrue(any(trace.status == "failed" and trace.module == "supervisor" for trace in stored_traces))
+        self.assertTrue(any(trace.module == "supervisor_recompute" for trace in stored_traces))
 
     def test_rejects_expected_signal_regression_mismatch(self) -> None:
         bars = _sample_bars()

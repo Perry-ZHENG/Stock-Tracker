@@ -57,6 +57,8 @@ def run_config_review(
         output.write(f"review_error={exc}\n")
         output.flush()
         return 1
+    finally:
+        connection.close()
 
     output.flush()
     return 0

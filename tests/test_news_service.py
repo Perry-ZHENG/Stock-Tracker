@@ -23,6 +23,7 @@ class NewsServiceTests(unittest.TestCase):
                 symbols=["QQQ"],
                 limit=5,
             )
+            connection.close()
 
         self.assertFalse(result.ok)
         self.assertIn("provider placeholder is not configured", result.message)
@@ -37,6 +38,7 @@ class NewsServiceTests(unittest.TestCase):
                 config=config,
                 provider=StaticNewsProvider([_news_item()]),
             ).query(symbols=["QQQ"], limit=5)
+            connection.close()
 
         self.assertFalse(result.ok)
         self.assertIn("missing api key env NEWS_API_KEY", result.message)
@@ -52,6 +54,7 @@ class NewsServiceTests(unittest.TestCase):
                 provider=StaticNewsProvider([_news_item()]),
             ).query(symbols=["QQQ"], limit=5)
             stored = list_news_items(connection)
+            connection.close()
 
         self.assertTrue(result.ok)
         self.assertEqual(result.message, "news_status=fetched rows=1")
@@ -70,6 +73,7 @@ class NewsServiceTests(unittest.TestCase):
 
             first = service.query(symbols=["QQQ"], limit=5)
             second = service.query(symbols=["QQQ"], limit=5)
+            connection.close()
 
         self.assertTrue(first.ok)
         self.assertTrue(second.ok)
@@ -91,6 +95,7 @@ class NewsServiceTests(unittest.TestCase):
                 symbols=["QQQ"],
                 limit=5,
             )
+            connection.close()
 
         self.assertTrue(result.ok)
         self.assertEqual(result.message, "news_status=fetched rows=1")

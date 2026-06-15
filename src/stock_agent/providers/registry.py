@@ -19,6 +19,7 @@ from stock_agent.providers.broker_market_data import BrokerMarketDataProviderErr
 from stock_agent.providers.csv_demo import CsvDemoProvider, CsvDemoProviderError
 from stock_agent.providers.live import LiveProviderError, create_live_provider
 from stock_agent.schemas import Bar
+from stock_agent.security import redact_sensitive, redact_text
 from stock_agent.storage.repositories import insert_notification, insert_trace_chain
 from stock_agent.tracing import create_trace, utc_now
 
@@ -104,7 +105,7 @@ class ProviderRegistry:
                     attempts=attempts,
                     fallback_used=len(attempts) > 1,
                     request_id=request_id,
-                    provider_health=provider.fetch_provider_health(),
+                    provider_health=redact_sensitive(provider.fetch_provider_health()),
                     latency_sec=latency_sec,
                 )
                 self._record_success(result)
@@ -118,14 +119,14 @@ class ProviderRegistry:
                         latency_sec=latency_sec,
                         request_id=request_id,
                         error_type=_classify_provider_error(exc),
-                        error_msg=str(exc),
+                        error_msg=redact_text(str(exc)),
                     )
                 )
 
         self._record_failure(attempts)
         message = "all configured market data providers failed"
         if attempts:
-            message += f": {attempts[-1].provider_name}: {attempts[-1].error_msg}"
+            message += f": {attempts[-1].provider_name}: {redact_text(attempts[-1].error_msg)}"
         raise ProviderRegistryError(message)
 
     def _provider_order(self) -> list[str]:
@@ -238,7 +239,7 @@ def _trace_for_attempts(attempts: list[ProviderAttempt], *, status: str):
     failed = [attempt for attempt in attempts if attempt.status == "failed"]
     if failed:
         error_msg = "; ".join(
-            f"{attempt.provider_name}({attempt.error_type}): {attempt.error_msg}" for attempt in failed
+            f"{attempt.provider_name}({attempt.error_type}): {redact_text(attempt.error_msg)}" for attempt in failed
         )
     return create_trace(
         trace_id=_trace_id(attempts),
@@ -285,7 +286,7 @@ def _attempt_payload(attempt: ProviderAttempt) -> dict[str, object]:
         "latency_sec": attempt.latency_sec,
         "request_id": attempt.request_id,
         "error_type": attempt.error_type,
-        "error_msg": attempt.error_msg,
+        "error_msg": redact_text(attempt.error_msg),
         "bar_count": attempt.bar_count,
     }
 

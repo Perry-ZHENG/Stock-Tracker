@@ -10,6 +10,7 @@ from typing import Callable, TextIO
 from zoneinfo import ZoneInfo
 
 from stock_agent.bars import BarBuilder, update_bar_checkpoint
+from stock_agent.bars.quarantine import persist_quarantine_result, quarantine_abnormal_bars
 from stock_agent.config import StockAgentConfig
 from stock_agent.health import HealthThresholds, record_health_metric
 from stock_agent.notifications import (
@@ -22,8 +23,10 @@ from stock_agent.scheduler import build_watch_schedule
 from stock_agent.signals import SignalPipeline
 from stock_agent.storage import LakeWriter
 from stock_agent.storage.repositories import insert_trace_chain
+from stock_agent.supervisor.provider_compare import apply_compare_quality, compare_provider_bars, persist_provider_compare
 from stock_agent.supervisor import supervise_candidate_signals
 from stock_agent.tracing import utc_now
+from stock_agent.worker.identity import WorkerIdentity, build_worker_identity
 
 
 @dataclass(frozen=True)
@@ -70,12 +73,14 @@ class WorkerPipeline:
         connection: sqlite3.Connection,
         notification_stream: TextIO | None = None,
         now_fn: Callable[[], datetime] = utc_now,
+        identity: WorkerIdentity | None = None,
     ) -> None:
         self.root = root
         self.config = config
         self.connection = connection
         self.notification_stream = notification_stream
         self.now_fn = now_fn
+        self.identity = identity or build_worker_identity()
         self.thresholds = HealthThresholds.from_config(config.health)
 
     def run_once(self) -> WorkerTickSummary:
@@ -95,6 +100,17 @@ class WorkerPipeline:
             interval=self.config.bar.interval,
         )
         raw_bars = provider_result.bars
+        compare_result = compare_provider_bars(primary_bars=raw_bars, secondary_bars=None)
+        persist_provider_compare(
+            self.connection,
+            compare_result,
+            primary_provider=provider_result.provider_name,
+            secondary_provider=None,
+        )
+        raw_bars = apply_compare_quality(raw_bars, compare_result)
+        quarantine_result = quarantine_abnormal_bars(raw_bars)
+        persist_quarantine_result(self.connection, quarantine_result)
+        raw_bars = quarantine_result.clean_bars
         prepared_bars = BarBuilder(
             regular_session_only=self.config.bar.session == "regular_only"
         ).from_standard_bars(raw_bars)
@@ -112,12 +128,22 @@ class WorkerPipeline:
             )
 
         signal_result = SignalPipeline(config=self.config, connection=self.connection).run(prepared_bars)
-        supervisor_result = supervise_candidate_signals(
-            bars=prepared_bars,
-            candidate_signals=signal_result.signals,
-            traces=signal_result.traces,
-            connection=self.connection,
-        )
+        if compare_result.should_suppress_signals:
+            supervisor_result = supervise_candidate_signals(
+                bars=prepared_bars,
+                candidate_signals=[],
+                traces=signal_result.traces,
+                strategy_params=signal_result.snapshot.strategy_params,
+                connection=self.connection,
+            )
+        else:
+            supervisor_result = supervise_candidate_signals(
+                bars=prepared_bars,
+                candidate_signals=signal_result.signals,
+                traces=signal_result.traces,
+                strategy_params=signal_result.snapshot.strategy_params,
+                connection=self.connection,
+            )
         for trace in supervisor_result.traces:
             insert_trace_chain(self.connection, trace)
 
@@ -125,7 +151,7 @@ class WorkerPipeline:
         notification_count = 0
         if supervisor_result.approved_signals:
             channels = ["cli"] if self.notification_stream is not None else []
-            outbox = NotificationOutbox(self.connection)
+            outbox = NotificationOutbox(self.connection, instance_id=self.identity.instance_id)
             outbox.enqueue_signals(supervisor_result.approved_signals, channels=channels)
             if self.notification_stream is not None:
                 dispatch_result = outbox.dispatch_pending(
@@ -154,6 +180,13 @@ class WorkerPipeline:
                 "provider": provider_result.provider_name,
                 "fallback_used": provider_result.fallback_used,
                 "provider_request_id": provider_result.request_id,
+                "provider_compare_status": compare_result.status,
+                "provider_compare_issues": len(compare_result.issues),
+                "abnormal_bar_count": len(quarantine_result.quarantined),
+                "instance_id": self.identity.instance_id,
+                "host_id": self.identity.host_id,
+                "lock_owner": self.identity.lock_owner(),
+                "multi_instance_enabled": self.identity.multi_instance_enabled,
             },
         )
         return summary

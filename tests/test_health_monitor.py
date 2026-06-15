@@ -65,6 +65,7 @@ class HealthMonitorTests(unittest.TestCase):
             )
 
             self.assertEqual(metric.status, "healthy")
+            connection.close()
 
     def test_health_command_reads_latest_metric(self) -> None:
         now = datetime(2026, 5, 22, 15, 30, tzinfo=UTC)
@@ -72,6 +73,7 @@ class HealthMonitorTests(unittest.TestCase):
             root = Path(tmp_dir)
             connection = initialize_database(root / "data/runtime/stock_agent.sqlite")
             record_health_metric(connection, module="run_demo", now=now)
+            connection.close()
             stream = io.StringIO()
 
             result = run_health(root, stream=stream)

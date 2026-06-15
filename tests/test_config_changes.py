@@ -41,6 +41,7 @@ class ConfigChangeTests(unittest.TestCase):
                     diff="symbols.default +SPY",
                     status="applied",
                 )
+            connection.close()
 
     def test_cli_approve_writes_yaml_and_marks_applied(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -59,6 +60,7 @@ class ConfigChangeTests(unittest.TestCase):
             )
 
             change = approve_config_change(connection, change_id="chg-001", config_path=config_path)
+            connection.close()
 
             self.assertEqual(change["status"], "applied")
             self.assertIn("QQQ", config_path.read_text(encoding="utf-8"))
@@ -80,6 +82,7 @@ class ConfigChangeTests(unittest.TestCase):
             )
 
             change = reject_config_change(connection, change_id="chg-001", reason="not now")
+            connection.close()
 
             self.assertEqual(change["status"], "rejected")
             self.assertEqual(config_path.read_text(encoding="utf-8"), "old: true\n")
@@ -110,6 +113,7 @@ class ConfigChangeTests(unittest.TestCase):
 
             self.assertEqual(config_path.read_text(encoding="utf-8"), "old: true\n")
             self.assertEqual(get_config_change(connection, "chg-001")["status"], "rollback")
+            connection.close()
 
 
 def _config_with_symbol(symbol: str):

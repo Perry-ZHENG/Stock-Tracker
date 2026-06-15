@@ -8,9 +8,11 @@ from dataclasses import dataclass, field
 from typing import Iterable
 
 from stock_agent.bars.validation import BarValidationError, validate_bars
+from stock_agent.health import HealthThresholds, record_health_metric
 from stock_agent.schemas import Bar, Signal, TraceChain
 from stock_agent.storage.repositories import insert_trace_chain
-from stock_agent.tracing import failed_trace, skipped_trace, trace_for_signal
+from stock_agent.supervisor.recompute import validate_recomputed_signals
+from stock_agent.tracing import create_trace, failed_trace, skipped_trace, trace_for_signal
 
 DEFAULT_STRATEGY_WARMUP_BARS = {
     "ma_cross_demo_2_3": 4,
@@ -36,6 +38,7 @@ def supervise_candidate_signals(
     traces: list[TraceChain],
     expected_signals: list[Signal] | None = None,
     strategy_warmup_bars: dict[str, int] | None = None,
+    strategy_params: dict[str, dict[str, object]] | None = None,
     connection: sqlite3.Connection | None = None,
 ) -> SupervisorResult:
     """Approve candidate signals only after deterministic objective checks pass."""
@@ -51,6 +54,12 @@ def supervise_candidate_signals(
     validation_errors.extend(_validate_warmup(bars, candidate_signals, warmup_policy))
     validation_errors.extend(_validate_signal_fields(candidate_signals))
     validation_errors.extend(_validate_trace_chain(candidate_signals, traces))
+    recompute_checks, recompute_errors = validate_recomputed_signals(
+        bars=bars,
+        signals=candidate_signals,
+        strategy_params=strategy_params,
+    )
+    validation_errors.extend(recompute_errors)
 
     if expected_signals is not None:
         validation_errors.extend(_validate_expected_signals(candidate_signals, expected_signals))
@@ -65,11 +74,18 @@ def supervise_candidate_signals(
             },
             error_msg="; ".join(validation_errors),
         )
+        recompute_trace = _recompute_trace(
+            recompute_checks,
+            status="failed" if recompute_errors else "success",
+            error_msg="; ".join(recompute_errors) if recompute_errors else None,
+        )
         _persist_trace_if_requested(connection, failure_trace)
+        _persist_trace_if_requested(connection, recompute_trace)
+        _record_recompute_health(connection, recompute_checks, recompute_errors)
         return SupervisorResult(
             approved_signals=[],
             rejected_signals=candidate_signals,
-            traces=[*traces, failure_trace],
+            traces=[*traces, recompute_trace, failure_trace],
             errors=validation_errors,
         )
 
@@ -88,10 +104,13 @@ def supervise_candidate_signals(
             errors=[],
         )
 
+    recompute_trace = _recompute_trace(recompute_checks, status="success", error_msg=None)
+    _persist_trace_if_requested(connection, recompute_trace)
+    _record_recompute_health(connection, recompute_checks, [])
     return SupervisorResult(
         approved_signals=candidate_signals,
         rejected_signals=[],
-        traces=traces,
+        traces=[*traces, recompute_trace],
         errors=[],
     )
 
@@ -203,6 +222,56 @@ def _persist_trace_if_requested(
 ) -> None:
     if connection is not None:
         insert_trace_chain(connection, trace)
+
+
+def _recompute_trace(recompute_checks, *, status: str, error_msg: str | None) -> TraceChain:
+    return create_trace(
+        trace_id=_recompute_trace_id(recompute_checks, status),
+        module="supervisor_recompute",
+        input_ref={"signal_ids": [check.signal_id for check in recompute_checks]},
+        output_ref={
+            "checks": [
+                {
+                    "signal_id": check.signal_id,
+                    "strategy_id": check.strategy_id,
+                    "status": check.status,
+                    "expected_direction": check.expected_direction,
+                    "actual_direction": check.actual_direction,
+                    "reason": check.reason,
+                    "details": check.details,
+                }
+                for check in recompute_checks
+            ]
+        },
+        status=status,
+        error_msg=error_msg,
+    )
+
+
+def _recompute_trace_id(recompute_checks, status: str) -> str:
+    payload = "|".join([status, *[f"{check.signal_id}:{check.status}:{check.expected_direction}" for check in recompute_checks]]) or status
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+    return f"trace-supervisor-recompute-{digest}"
+
+
+def _record_recompute_health(connection: sqlite3.Connection | None, recompute_checks, recompute_errors: list[str]) -> None:
+    if connection is None:
+        return
+    record_health_metric(
+        connection,
+        module="supervisor",
+        data_latency_sec=0,
+        error_rate=1 if recompute_errors else 0,
+        consecutive_failures=1 if recompute_errors else 0,
+        alert_failures=len(recompute_errors),
+        details={
+            "check": "independent_recompute",
+            "signals_checked": len(recompute_checks),
+            "mismatches": len(recompute_errors),
+            "rejected_signal_ids": [check.signal_id for check in recompute_checks if check.status == "mismatch"],
+        },
+        thresholds=HealthThresholds(),
+    )
 
 
 def signal_traces(signals: list[Signal]) -> list[TraceChain]:

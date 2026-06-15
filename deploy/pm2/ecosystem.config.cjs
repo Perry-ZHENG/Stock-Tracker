@@ -1,4 +1,6 @@
 module.exports = {
+  // Dry-run validation before starting:
+  // STOCK_AGENT_BIN=stock-agent stock-agent deploy-validate
   apps: [
     {
       name: "stock-agent-worker",

@@ -23,6 +23,15 @@ The CLI reads `STOCK_AGENT_WORKDIR` and falls back to the current working
 directory when it is not set. `stock-agent init-config` and CLI config approval
 read `STOCK_AGENT_CONFIG` when choosing the YAML path to write.
 
+Before installing any template, run the offline dry-run validation:
+
+```sh
+stock-agent deploy-validate
+```
+
+The command loads local config and checks the workdir, storage parents, and demo
+CSV path. It does not start the worker, write runtime data, or call the network.
+
 ## macOS launchd
 
 Template:
@@ -33,8 +42,9 @@ Usage:
 
 1. Copy the plist to a machine-specific path outside the repository.
 2. Replace every `${...}` placeholder with the machine's environment values.
-3. Load it with `launchctl bootstrap` for the target user or system domain.
-4. Inspect logs at `${STOCK_AGENT_LOG_DIR}/worker.out.log` and
+3. Run `${STOCK_AGENT_BIN} deploy-validate` from the rendered workdir.
+4. Load it with `launchctl bootstrap` for the target user or system domain.
+5. Inspect logs at `${STOCK_AGENT_LOG_DIR}/worker.out.log` and
    `${STOCK_AGENT_LOG_DIR}/worker.err.log`.
 
 `launchd` does not expand shell-style placeholders automatically. The plist must
@@ -52,7 +62,8 @@ Usage:
 2. Replace placeholders in the service file or render it in your deployment
    tooling.
 3. Install the rendered service file into the target systemd unit directory.
-4. Run `systemctl daemon-reload`, then enable and start the service.
+4. Run `${STOCK_AGENT_BIN} deploy-validate` with the same environment file.
+5. Run `systemctl daemon-reload`, then enable and start the service.
 
 Example environment file content:
 
@@ -77,6 +88,11 @@ Template:
 Usage:
 
 ```sh
+STOCK_AGENT_BIN=stock-agent \
+STOCK_AGENT_WORKDIR=/path/to/stock-agent \
+STOCK_AGENT_CONFIG=configs/config.yaml \
+STOCK_AGENT_INTERVAL_SEC=30 \
+stock-agent deploy-validate
 STOCK_AGENT_BIN=stock-agent \
 STOCK_AGENT_WORKDIR=/path/to/stock-agent \
 STOCK_AGENT_CONFIG=configs/config.yaml \

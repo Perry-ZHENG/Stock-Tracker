@@ -24,6 +24,7 @@ class RunDemoTests(unittest.TestCase):
             signals = list_signals(connection)
             traces = list_trace_chain(connection)
             notifications = list_notifications(connection)
+            connection.close()
 
         self.assertEqual(summary.bars_read, 5)
         self.assertEqual(summary.bars_used, 5)
@@ -32,8 +33,8 @@ class RunDemoTests(unittest.TestCase):
         self.assertEqual(summary.rejected_signals, 0)
         self.assertEqual(len(signals), 1)
         self.assertEqual(signals[0].signal_id, "sig-qqq-ma2-ma3-20260522T153000Z")
-        self.assertEqual(len(traces), 1)
-        self.assertEqual(traces[0].trace_id, signals[0].trace_id)
+        self.assertEqual(len(traces), 2)
+        self.assertIn(signals[0].trace_id, {trace.trace_id for trace in traces})
         self.assertEqual(len(notifications), 1)
         self.assertIn("Run demo summary", stream.getvalue())
 

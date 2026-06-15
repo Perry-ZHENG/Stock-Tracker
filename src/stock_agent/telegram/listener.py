@@ -82,6 +82,10 @@ def handle_telegram_message(
         )
     if command in {"/schedule", "schedule"}:
         return _query(root, "schedule", role=role, limit=_limit(parts), config_context=config_context)
+    if command in {"/provider-compare", "provider-compare"}:
+        return _query(root, "provider-compare", role=role, limit=_limit(parts), config_context=config_context)
+    if command in {"/abnormal-bars", "abnormal-bars"}:
+        return _query(root, "abnormal-bars", role=role, limit=_limit(parts), config_context=config_context)
     if command in {"/trace", "trace"}:
         return _trace(root, role=role, parts=parts, config_context=config_context)
     if command in {"/config", "config"}:
@@ -90,7 +94,7 @@ def handle_telegram_message(
     return TelegramCommandResult(
         ok=False,
         role=role,
-        message="telegram_error=unsupported command; supported: /signals, /health, /news, /schedule, /trace, /config add-symbol SYMBOL",
+        message="telegram_error=unsupported command; supported: /signals, /health, /news, /schedule, /provider-compare, /abnormal-bars, /trace, /config add-symbol SYMBOL",
     )
 
 

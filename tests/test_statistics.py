@@ -29,6 +29,7 @@ class StatisticsTests(unittest.TestCase):
                 period="day",
                 anchor=datetime(2026, 5, 22, 16, 0, tzinfo=UTC),
             )
+            connection.close()
 
         self.assertEqual(statistic.signal_count, 2)
         self.assertEqual(statistic.trigger_count, 1)
@@ -56,6 +57,7 @@ class StatisticsTests(unittest.TestCase):
             persist_signal_statistics(connection, yearly)
             stored_monthly = list_signal_statistics(connection, period="month")
             stored_yearly = list_signal_statistics(connection, period="year")
+            connection.close()
 
         self.assertEqual(stored_monthly[0]["period"], "month")
         self.assertEqual(stored_monthly[0]["signal_count"], 1)
@@ -67,6 +69,7 @@ class StatisticsTests(unittest.TestCase):
             root = Path(tmp_dir)
             connection = initialize_runtime_database(root)
             insert_signal(connection, _signal("sig-buy", "buy_watch"))
+            connection.close()
             stream = io.StringIO()
 
             exit_code = run_cli_query(root, query="stats", period="day", stream=stream)
@@ -78,7 +81,8 @@ class StatisticsTests(unittest.TestCase):
     def test_cli_stats_rejects_unknown_period(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
-            initialize_runtime_database(root)
+            connection = initialize_runtime_database(root)
+            connection.close()
             stream = io.StringIO()
 
             exit_code = run_cli_query(root, query="stats", period="week", stream=stream)

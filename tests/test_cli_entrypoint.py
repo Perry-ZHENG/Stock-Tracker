@@ -24,10 +24,21 @@ class CliEntrypointTests(unittest.TestCase):
                 self.assertEqual(exc_info.exception.code, 0)
 
     def test_command_skeleton_returns_not_implemented(self) -> None:
+        implemented_commands = {
+            "init-config",
+            "run-demo",
+            "health",
+            "cli",
+            "telegram",
+            "worker",
+            "replay",
+            "deploy-validate",
+            "retention",
+        }
         skeleton_commands = [
             command
             for command in COMMANDS
-            if command not in {"init-config", "run-demo", "health", "cli", "telegram", "worker", "replay"}
+            if command not in implemented_commands
         ]
         for command in skeleton_commands:
             with self.subTest(command=command):

@@ -25,6 +25,7 @@ class ConfigReviewCliTests(unittest.TestCase):
                 after_config=_config_with_symbol("QQQ"),
                 diff="symbols.default +QQQ",
             )
+            connection.close()
             stream = io.StringIO()
 
             exit_code = run_config_review(root, action="review", stream=stream)
@@ -46,6 +47,7 @@ class ConfigReviewCliTests(unittest.TestCase):
                 after_config=_config_with_symbol("QQQ"),
                 diff="symbols.default +QQQ",
             )
+            connection.close()
             stream = io.StringIO()
 
             exit_code = run_config_review(root, action="approve", change_id="chg-001", stream=stream)
@@ -67,6 +69,7 @@ class ConfigReviewCliTests(unittest.TestCase):
                 after_config=_config_with_symbol("QQQ"),
                 diff="symbols.default +QQQ",
             )
+            connection.close()
 
             with patch("pathlib.Path.cwd", return_value=root):
                 self.assertEqual(main(["cli", "review"]), 0)

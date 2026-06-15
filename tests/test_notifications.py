@@ -35,6 +35,7 @@ class NotificationTests(unittest.TestCase):
             persist_approved_signals(connection, signals)
 
             self.assertEqual(list_signals(connection), signals)
+            connection.close()
 
     def test_repository_sink_writes_notification_row(self) -> None:
         signals = _sample_signals()
@@ -44,6 +45,7 @@ class NotificationTests(unittest.TestCase):
 
             result = send_with_retries(sink, signals)
             notifications = list_notifications(connection)
+            connection.close()
 
         self.assertTrue(result.success)
         self.assertEqual(result.attempts, 1)
@@ -93,6 +95,7 @@ class NotificationTests(unittest.TestCase):
             second = outbox.enqueue_signals(signals, channels=["cli"])
             dispatch = outbox.dispatch_pending({"cli": CliNotificationSink(stream)})
             notifications = list_notifications(connection)
+            connection.close()
 
         self.assertEqual(first.created, 1)
         self.assertEqual(second.created, 0)
@@ -115,6 +118,7 @@ class NotificationTests(unittest.TestCase):
                 for _ in range(5)
             ]
             notifications = list_notifications(connection)
+            connection.close()
 
         self.assertEqual(sum(result.failed for result in results), 4)
         self.assertEqual(sum(result.suppressed for result in results), 1)

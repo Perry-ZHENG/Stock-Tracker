@@ -18,14 +18,16 @@ from stock_agent.storage.repositories import (
     get_signal,
     get_trace_chain,
     list_config_changes,
+    list_abnormal_bars,
     list_health_metrics,
     list_news_items,
     list_signal_statistics,
     list_signals,
+    list_trace_chain,
 )
 from stock_agent.storage.sqlite import open_database
 
-QueryName = Literal["signals", "health", "config-changes", "news", "stats", "schedule", "bars", "trace"]
+QueryName = Literal["signals", "health", "config-changes", "news", "stats", "schedule", "bars", "trace", "provider-compare", "abnormal-bars"]
 
 
 @dataclass(frozen=True)
@@ -126,6 +128,12 @@ class QueryService:
             elif query == "trace":
                 trace_result = _query_trace(connection, target_id)
                 return trace_result
+            elif query == "provider-compare":
+                rows = [trace for trace in list_trace_chain(connection, limit=limit) if trace.module == "provider_compare"]
+                text = _format_provider_compare(rows)
+            elif query == "abnormal-bars":
+                rows = list_abnormal_bars(connection, limit=limit)
+                text = _format_abnormal_bars(rows)
             else:
                 text = f"query_error=unsupported query {query}\n"
                 return QueryResult(ok=False, query=query, text=text, rows=[], message="unsupported query")
@@ -304,6 +312,51 @@ def _format_statistics(rows: list[dict[str, object]]) -> str:
         details = row["details"]
         hit_status = details.get("hit_count_status", "") if isinstance(details, dict) else ""
         lines.append(" | ".join([str(row["period"]), str(row["period_start"]), str(row["signal_count"]), str(row["trigger_count"]), str(row["run_count"]), str(hit_status)]))
+    return "\n".join(lines) + "\n"
+
+
+def _format_provider_compare(rows: list[TraceChain]) -> str:
+    if not rows:
+        return "provider_compare: no rows\n"
+    lines = ["provider_compare_status=ok", "created_at | trace_id | status | compare_status | compared | skipped | issues"]
+    for trace in rows:
+        output = trace.output_ref if isinstance(trace.output_ref, dict) else {}
+        issues = output.get("issues", [])
+        lines.append(
+            " | ".join(
+                [
+                    trace.created_at.isoformat().replace("+00:00", "Z"),
+                    trace.trace_id,
+                    trace.status,
+                    str(output.get("status", "")),
+                    str(output.get("compared", "")),
+                    str(output.get("skipped", "")),
+                    str(len(issues) if isinstance(issues, list) else 0),
+                ]
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _format_abnormal_bars(rows: list[dict[str, object]]) -> str:
+    if not rows:
+        return "abnormal_bars: no rows\n"
+    lines = ["abnormal_bars_status=ok", "created_at | quarantine_id | status | severity | symbol | window | reason | bar_id"]
+    for row in rows:
+        lines.append(
+            " | ".join(
+                [
+                    str(row["created_at"]),
+                    str(row["quarantine_id"]),
+                    str(row["status"]),
+                    str(row["severity"]),
+                    str(row["symbol"]),
+                    str(row["window"]),
+                    str(row["reason"]),
+                    str(row["bar_id"]),
+                ]
+            )
+        )
     return "\n".join(lines) + "\n"
 
 

@@ -20,6 +20,7 @@ from stock_agent.dialog.intents import (
 )
 from stock_agent.dialog.parser import parse_structured_command
 from stock_agent.query import QueryService
+from stock_agent.security.trading_firewall import TradingActionFirewall, blocked_message
 from stock_agent.storage.sqlite import initialize_runtime_database
 
 
@@ -58,7 +59,7 @@ def run_interactive_cli(
         elif isinstance(intent, PendingChangeIntent):
             output.write(_handle_pending_change(root, intent, input_stream=input_stream, config_context=config_context))
         elif isinstance(intent, HighRiskBlockedIntent):
-            output.write(f"blocked={intent.requested_action}\n{intent.safety_message}\n")
+            output.write(_handle_blocked_intent(root, intent, config_context=config_context))
         elif isinstance(intent, ClarificationIntent):
             output.write(f"clarification_required=true\nquestion={intent.question}\n")
             output.write("examples:\n")
@@ -80,6 +81,24 @@ def _execute_read_only(root: Path, intent: ReadOnlyIntent, *, config_context: Ru
         to_value=intent.to_ts,
     )
     return result.text
+
+
+def _handle_blocked_intent(
+    root: Path,
+    intent: HighRiskBlockedIntent,
+    *,
+    config_context: RuntimeConfigContext,
+) -> str:
+    connection = initialize_runtime_database(root, config_context.config)
+    try:
+        decision = TradingActionFirewall(connection).inspect_intent(
+            intent,
+            source="cli",
+            actor_ref="local_cli",
+        )
+    finally:
+        connection.close()
+    return blocked_message(intent.requested_action, audit_id=decision.audit_id)
 
 
 def _handle_pending_change(

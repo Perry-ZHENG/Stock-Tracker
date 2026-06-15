@@ -52,57 +52,60 @@ def run_demo(
     sqlite_path = root / config.storage.sqlite_path
     connection = initialize_runtime_database(root, config)
 
-    raw_bars = CsvDemoProvider(root / config.provider.csv_demo.path).fetch_intraday_bars(
-        interval=config.bar.interval
-    )
-    bars = BarBuilder(regular_session_only=config.bar.session == "regular_only").from_standard_bars(
-        raw_bars
-    )
-    candidate_signals = generate_ma_cross_demo_signals(bars)
-    traces = signal_traces(candidate_signals)
-    expected_signals = _load_expected_signals(root)
+    try:
+        raw_bars = CsvDemoProvider(root / config.provider.csv_demo.path).fetch_intraday_bars(
+            interval=config.bar.interval
+        )
+        bars = BarBuilder(regular_session_only=config.bar.session == "regular_only").from_standard_bars(
+            raw_bars
+        )
+        candidate_signals = generate_ma_cross_demo_signals(bars)
+        traces = signal_traces(candidate_signals)
+        expected_signals = _load_expected_signals(root)
 
-    supervisor_result = supervise_candidate_signals(
-        bars=bars,
-        candidate_signals=candidate_signals,
-        traces=traces,
-        expected_signals=expected_signals,
-        connection=connection,
-    )
+        supervisor_result = supervise_candidate_signals(
+            bars=bars,
+            candidate_signals=candidate_signals,
+            traces=traces,
+            expected_signals=expected_signals,
+            connection=connection,
+        )
 
-    _persist_traces(connection, supervisor_result.traces)
-    persist_approved_signals(connection, supervisor_result.approved_signals)
+        _persist_traces(connection, supervisor_result.traces)
+        persist_approved_signals(connection, supervisor_result.approved_signals)
 
-    notification_results = [
-        send_with_retries(RepositoryNotificationSink(connection), supervisor_result.approved_signals),
-        send_with_retries(CliNotificationSink(output), supervisor_result.approved_signals),
-    ]
-    record_health_metric(
-        connection,
-        module="run_demo",
-        data_latency_sec=0,
-        error_rate=0 if supervisor_result.ok else 1,
-        consecutive_failures=0 if supervisor_result.ok else 1,
-        alert_failures=sum(1 for result in notification_results if not result.success),
-        details={
-            "provider": config.provider.default,
-            "bars_used": len(bars),
-            "approved_signals": len(supervisor_result.approved_signals),
-        },
-        thresholds=HealthThresholds.from_config(config.health),
-    )
+        notification_results = [
+            send_with_retries(RepositoryNotificationSink(connection), supervisor_result.approved_signals),
+            send_with_retries(CliNotificationSink(output), supervisor_result.approved_signals),
+        ]
+        record_health_metric(
+            connection,
+            module="run_demo",
+            data_latency_sec=0,
+            error_rate=0 if supervisor_result.ok else 1,
+            consecutive_failures=0 if supervisor_result.ok else 1,
+            alert_failures=sum(1 for result in notification_results if not result.success),
+            details={
+                "provider": config.provider.default,
+                "bars_used": len(bars),
+                "approved_signals": len(supervisor_result.approved_signals),
+            },
+            thresholds=HealthThresholds.from_config(config.health),
+        )
 
-    summary = RunDemoSummary(
-        bars_read=len(raw_bars),
-        bars_used=len(bars),
-        candidate_signals=len(candidate_signals),
-        approved_signals=len(supervisor_result.approved_signals),
-        rejected_signals=len(supervisor_result.rejected_signals),
-        notifications=sum(1 for result in notification_results if result.success),
-        sqlite_path=sqlite_path,
-    )
-    _print_summary(output, summary)
-    return summary
+        summary = RunDemoSummary(
+            bars_read=len(raw_bars),
+            bars_used=len(bars),
+            candidate_signals=len(candidate_signals),
+            approved_signals=len(supervisor_result.approved_signals),
+            rejected_signals=len(supervisor_result.rejected_signals),
+            notifications=sum(1 for result in notification_results if result.success),
+            sqlite_path=sqlite_path,
+        )
+        _print_summary(output, summary)
+        return summary
+    finally:
+        connection.close()
 
 
 def _load_expected_signals(root: Path) -> list[Signal]:

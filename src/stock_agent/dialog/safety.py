@@ -30,6 +30,14 @@ HIGH_RISK_TEXT_MARKERS = (
     "cancel order",
     "withdraw",
     "transfer",
+    "api key",
+    "apikey",
+    "token",
+    "secret",
+    "credential",
+    "密钥",
+    "令牌",
+    "凭证",
 )
 
 
