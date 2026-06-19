@@ -2,6 +2,9 @@
 .env
 .env.*
 !.env.example
+PRD.md
+task.md
+design.md
 
 # Python
 __pycache__/

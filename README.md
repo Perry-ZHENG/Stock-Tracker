@@ -1,6 +1,6 @@
-# Stock Agent
+# Stock Tracker
 
-Stock Agent is a local-first stock monitoring agent for US market watch workflows.
+Stock Tracker is a local-first stock monitoring agent for US market watch workflows.
 It ingests market data, builds 30-minute bars, runs rule-based strategies,
 supervises candidate signals, stores traceable decision memory, and exposes
 CLI/Telegram-style query flows.
@@ -20,20 +20,6 @@ Market data provider
   -> Outbox / CLI notification / query interfaces
 ```
 
-Core capabilities:
-
-- Local demo mode from `data/sample/sample_bars.csv`.
-- Live provider seam with Alpha Vantage adapter.
-- 30-minute bar aggregation and regular-session filtering.
-- Multi-strategy signal generation.
-- Supervisor recomputation to reduce strategy false positives.
-- Abnormal bar quarantine and provider comparison traces.
-- Message safety review and trading firewall controls.
-- Worker crash budget, single-instance lock, and health metrics.
-- SQLite-backed traceable memory for every approved signal.
-- CLI queries for signals, trace, health, bars, stats, provider compare, and abnormal bars.
-- Telegram bot core for safe query/config-change handling.
-- LLM parser seam that can convert natural language into validated command intents.
 
 ## Current Integration Status
 
@@ -239,7 +225,6 @@ The worker will:
 8. Enqueue notifications.
 9. Record health metrics.
 
-Use `Ctrl+C` to stop the worker.
 
 ## Health Check
 
