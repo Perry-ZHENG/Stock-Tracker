@@ -3,6 +3,7 @@ import shutil
 import tempfile
 import unittest
 from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ from stock_agent.storage.sqlite import initialize_runtime_database, open_databas
 from stock_agent.worker import SingleInstanceLock, SingleInstanceLockError, Worker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+MARKET_OPEN_NOW = datetime(2026, 5, 22, 15, 30, tzinfo=UTC)
 
 
 class WorkerTests(unittest.TestCase):
@@ -54,7 +56,7 @@ class WorkerTests(unittest.TestCase):
             _copy_sample_data(root)
             stream = io.StringIO()
 
-            exit_code = run_worker(root, once=True, interval_sec=0.01, stream=stream)
+            exit_code = run_worker(root, once=True, interval_sec=0.01, stream=stream, now_fn=lambda: MARKET_OPEN_NOW)
             connection = open_database(root / "data/runtime/stock_agent.sqlite")
             metrics = list_health_metrics(connection)
             connection.close()
@@ -141,7 +143,7 @@ class WorkerTests(unittest.TestCase):
             config_path.write_text(render_config_yaml(config), encoding="utf-8")
             stream = io.StringIO()
 
-            exit_code = run_worker(root, once=True, interval_sec=0.01, stream=stream)
+            exit_code = run_worker(root, once=True, interval_sec=0.01, stream=stream, now_fn=lambda: MARKET_OPEN_NOW)
             connection = open_database(root / "data/runtime/stock_agent.sqlite")
             signals = list_signals(connection)
             snapshots = list_strategy_snapshots(connection)
@@ -170,9 +172,9 @@ class WorkerTests(unittest.TestCase):
             config_path.parent.mkdir(parents=True)
             config_path.write_text(render_config_yaml(config), encoding="utf-8")
 
-            first_exit = run_worker(root, once=True, interval_sec=0.01, stream=io.StringIO())
+            first_exit = run_worker(root, once=True, interval_sec=0.01, stream=io.StringIO(), now_fn=lambda: MARKET_OPEN_NOW)
             second_stream = io.StringIO()
-            second_exit = run_worker(root, once=True, interval_sec=0.01, stream=second_stream)
+            second_exit = run_worker(root, once=True, interval_sec=0.01, stream=second_stream, now_fn=lambda: MARKET_OPEN_NOW)
             connection = open_database(root / "data/runtime/stock_agent.sqlite")
             notifications = list_notifications(connection)
             connection.close()

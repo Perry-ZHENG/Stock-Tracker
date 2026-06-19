@@ -89,6 +89,7 @@ def _subprocess_env() -> dict[str, str]:
     if env.get("PYTHONPATH"):
         python_path = python_path + os.pathsep + env["PYTHONPATH"]
     env["PYTHONPATH"] = python_path
+    env["STOCK_AGENT_NOW"] = "2026-05-22T15:30:00Z"
     return env
 
 

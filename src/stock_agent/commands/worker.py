@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TextIO
+from typing import Callable, TextIO
 
 from stock_agent.config_loader import RuntimeConfigContext, load_config
 from stock_agent.health import HealthThresholds
@@ -21,6 +23,7 @@ def run_worker(
     interval_sec: float = 30,
     stream: TextIO | None = None,
     config_context: RuntimeConfigContext | None = None,
+    now_fn: Callable[[], datetime] | None = None,
 ) -> int:
     output = stream or sys.stdout
     config_context = config_context or load_config(root)
@@ -39,6 +42,7 @@ def run_worker(
             config=config,
             connection=connection,
             notification_stream=output,
+            now_fn=now_fn or _runtime_now_fn(),
             identity=identity,
         ),
     )
@@ -67,6 +71,19 @@ def run_worker(
     finally:
         connection.close()
     return exit_code
+
+
+def _runtime_now_fn() -> Callable[[], datetime]:
+    fixed_now = os.getenv("STOCK_AGENT_NOW")
+    if not fixed_now:
+        from stock_agent.tracing import utc_now
+
+        return utc_now
+    parsed = datetime.fromisoformat(fixed_now.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    frozen = parsed.astimezone(UTC)
+    return lambda: frozen
 
 
 __all__ = ["run_worker"]

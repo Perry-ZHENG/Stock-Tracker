@@ -2,6 +2,7 @@ import io
 import tempfile
 import unittest
 from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from stock_agent.worker.scheduler import SingleInstanceLock, SingleInstanceLockE
 from stock_agent.commands.worker import run_worker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+MARKET_OPEN_NOW = datetime(2026, 5, 22, 15, 30, tzinfo=UTC)
 
 
 class WorkerIdentityTests(unittest.TestCase):
@@ -54,8 +56,14 @@ class WorkerIdentityTests(unittest.TestCase):
             config_path.write_text(render_config_yaml(config), encoding="utf-8")
 
             with patch.dict("os.environ", {"STOCK_AGENT_INSTANCE_ID": "inst-a", "STOCK_AGENT_HOST_ID": "host-a"}):
-                self.assertEqual(run_worker(root, once=True, interval_sec=0.01, stream=io.StringIO()), 0)
-                self.assertEqual(run_worker(root, once=True, interval_sec=0.01, stream=io.StringIO()), 0)
+                self.assertEqual(
+                    run_worker(root, once=True, interval_sec=0.01, stream=io.StringIO(), now_fn=lambda: MARKET_OPEN_NOW),
+                    0,
+                )
+                self.assertEqual(
+                    run_worker(root, once=True, interval_sec=0.01, stream=io.StringIO(), now_fn=lambda: MARKET_OPEN_NOW),
+                    0,
+                )
 
             connection = open_database(root / "data/runtime/stock_agent.sqlite")
             metrics = list_health_metrics(connection, limit=10)
