@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "stock-agent"
 version = "0.1.0"
 description = "Local-first US market watch and signal assistant."
-readme = "PRD.md"
+readme = "README.md"
 requires-python = ">=3.12"
 authors = [
   { name = "Perry-ZHENG" }
