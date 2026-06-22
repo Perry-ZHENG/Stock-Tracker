@@ -18,7 +18,9 @@ from stock_agent.dialog.intents import (
     PendingChangeIntent,
     ReadOnlyIntent,
 )
-from stock_agent.dialog.parser import parse_structured_command
+from stock_agent.dialog.interaction import ChatClient, build_interaction_plan, format_interaction_plan
+from stock_agent.dialog.langchain_adapter import build_langchain_client
+from stock_agent.dialog.llm_parser import LlmParser
 from stock_agent.query import QueryService
 from stock_agent.security.trading_firewall import TradingActionFirewall, blocked_message
 from stock_agent.storage.sqlite import initialize_runtime_database
@@ -30,10 +32,15 @@ def run_interactive_cli(
     input_stream: TextIO | None = None,
     output_stream: TextIO | None = None,
     config_context: RuntimeConfigContext | None = None,
+    llm_parser: LlmParser | None = None,
+    chat_client: ChatClient | None = None,
 ) -> int:
     input_stream = input_stream or sys.stdin
     output = output_stream or sys.stdout
     config_context = config_context or load_config(root)
+    langchain_client = build_langchain_client(config_context.config.llm)
+    llm_parser = llm_parser or LlmParser(enabled=langchain_client is not None, client=langchain_client)
+    chat_client = chat_client or langchain_client
     output.write("stock-agent interactive cli\n")
     output.write("type 'exit' or 'quit' to leave\n")
 
@@ -53,11 +60,35 @@ def run_interactive_cli(
         if not text:
             continue
 
-        intent = parse_structured_command(text, source="cli")
+        plan = build_interaction_plan(text, llm_parser=llm_parser, chat_client=chat_client)
+        if plan.is_chat:
+            output.write(format_interaction_plan(plan))
+            output.flush()
+            continue
+        if plan.requires_confirmation:
+            output.write(format_interaction_plan(plan))
+            output.write("execute? type yes to continue: ")
+            output.flush()
+            confirmation = input_stream.readline().strip().lower()
+            if confirmation != "yes":
+                output.write("\nexecution_status=cancelled\n")
+                output.flush()
+                continue
+            output.write("\n")
+
+        intent = plan.intent
         if isinstance(intent, ReadOnlyIntent):
             output.write(_execute_read_only(root, intent, config_context=config_context))
         elif isinstance(intent, PendingChangeIntent):
-            output.write(_handle_pending_change(root, intent, input_stream=input_stream, config_context=config_context))
+            output.write(
+                _handle_pending_change(
+                    root,
+                    intent,
+                    input_stream=input_stream,
+                    config_context=config_context,
+                    already_confirmed=plan.requires_confirmation,
+                )
+            )
         elif isinstance(intent, HighRiskBlockedIntent):
             output.write(_handle_blocked_intent(root, intent, config_context=config_context))
         elif isinstance(intent, ClarificationIntent):
@@ -107,6 +138,7 @@ def _handle_pending_change(
     *,
     input_stream: TextIO,
     config_context: RuntimeConfigContext,
+    already_confirmed: bool = False,
 ) -> str:
     before_config = copy.deepcopy(config_context.raw_config)
     after_config = _apply_pending_change(copy.deepcopy(config_context.raw_config), intent)
@@ -114,9 +146,10 @@ def _handle_pending_change(
         return f"pending_change_status=noop action={intent.action}\n"
 
     prompt = f"pending_change action={intent.action} requires confirmation; type yes to record: "
-    confirmation = input_stream.readline().strip().lower()
-    if confirmation != "yes":
-        return prompt + "\npending_change_status=cancelled\n"
+    if not already_confirmed:
+        confirmation = input_stream.readline().strip().lower()
+        if confirmation != "yes":
+            return prompt + "\npending_change_status=cancelled\n"
 
     connection = initialize_runtime_database(root, config_context.config)
     try:
@@ -134,6 +167,8 @@ def _handle_pending_change(
         )
     finally:
         connection.close()
+    if already_confirmed:
+        return f"config_change={change_id} status=pending_review requires CLI approve\n"
     return prompt + f"\nconfig_change={change_id} status=pending_review requires CLI approve\n"
 
 

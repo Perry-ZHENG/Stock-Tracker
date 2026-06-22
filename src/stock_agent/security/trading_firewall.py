@@ -12,6 +12,7 @@ from stock_agent.storage.repositories import insert_security_audit
 from stock_agent.tracing import utc_now
 
 OBSERVATION_ONLY_MESSAGE = "本系统只提供观察信号，最终买卖由用户自行决定。"
+SECRET_ACCESS_BLOCKED_MESSAGE = "credential requests are blocked; API keys, tokens, and environment secrets are never displayed by this CLI."
 BLOCKED_DECISION = "blocked"
 
 _TRADING_AND_MUTATION_ACTIONS: set[BlockedAction] = {
@@ -102,6 +103,8 @@ def is_firewall_blocked_action(action: str) -> bool:
 def blocked_message(action: str, *, audit_id: str | None = None) -> str:
     redacted_action = redact_text(action) or "unknown_high_risk"
     suffix = f"\naudit_id={audit_id}" if audit_id else ""
+    if redacted_action == "read_secret":
+        return f"blocked={redacted_action}\n{SECRET_ACCESS_BLOCKED_MESSAGE}{suffix}\n"
     return f"blocked={redacted_action}\n{OBSERVATION_ONLY_MESSAGE}{suffix}\n"
 
 
@@ -109,6 +112,7 @@ __all__ = [
     "BLOCKED_DECISION",
     "FirewallDecision",
     "OBSERVATION_ONLY_MESSAGE",
+    "SECRET_ACCESS_BLOCKED_MESSAGE",
     "TradingActionFirewall",
     "blocked_message",
     "is_firewall_blocked_action",

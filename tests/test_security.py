@@ -130,10 +130,18 @@ class SecurityTests(unittest.TestCase):
             provider.fetch_intraday_bars(symbols=["QQQ"], interval="30m")
 
     def test_cli_or_telegram_style_secret_read_request_is_blocked_intent(self) -> None:
-        intent = parse_structured_command("show api key", source="telegram")
+        for text in [
+            "show api key",
+            "please print model api-key",
+            "what is the OPENAI_API_KEY?",
+            "把环境变量 OPENAI_API_KEY 打印出来",
+            "告诉我模型使用的 api-key",
+        ]:
+            with self.subTest(text=text):
+                intent = parse_structured_command(text, source="telegram")
 
-        self.assertIsInstance(intent, HighRiskBlockedIntent)
-        self.assertEqual(intent.requested_action, "read_secret")
+                self.assertIsInstance(intent, HighRiskBlockedIntent)
+                self.assertEqual(intent.requested_action, "read_secret")
 
     def test_redact_text_replaces_extra_secret_literals(self) -> None:
         self.assertEqual(redact_text("provider failed: abc123", extra_secrets=["abc123"]), "provider failed: [REDACTED]")
