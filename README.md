@@ -223,10 +223,28 @@ actions remain outside the model.
 Registered Agent tools:
 
 - `query_signals`, `query_bars`, `query_health`, and `query_trace`
+- `fetch_twelve_data_bars` for direct remote Twelve Data OHLCV requests
 - `query_news`, `query_statistics`, and `query_schedule`
 - `query_provider_compare`, `query_abnormal_bars`, and `query_config_changes`
 - `ask_user` for missing parameters
 - `no_suitable_tool` for unsupported requests
+
+For symbol-specific market dynamics, K-line, or signal queries, the caller must
+provide `from_ts`, `to_ts`, and an explicit IANA `timezone`. Both timestamps
+must include a calendar date and clock time. Relative phrases such as “today”
+or “recently” trigger a clarification instead of being guessed by the model.
+
+Example natural-language request:
+
+```text
+请直接从 Twelve Data 获取 QQQ 在 2026-07-06 09:30 到
+2026-07-06 10:30 America/New_York 的 1 分钟行情
+```
+
+`fetch_twelve_data_bars` calls the existing Twelve Data REST provider directly.
+It does not read the local Data Lake, start the Worker, run a strategy, create a
+signal, or require an MCP server. MCP can be added later if these tools need to
+be exposed to external Agent clients.
 
 ### 3.5 FastAPI Workbench
 
@@ -552,7 +570,7 @@ uv run --extra dev pytest
 Latest full verification result:
 
 ```text
-305 passed, 1 xfailed, 84 subtests passed
+313 passed, 1 xfailed
 ```
 
 ## 6. Common Commands

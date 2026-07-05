@@ -13,11 +13,18 @@ from stock_agent.dialog.intents import (
     PendingChangeAction,
     validate_intent,
 )
+from stock_agent.dialog.time_window import explicit_market_time_question
 
 EXAMPLES = [
-    "show signals NVDA limit 5",
+    (
+        "show signals NVDA from 2026-07-06T09:30:00-04:00 "
+        "to 2026-07-06T16:00:00-04:00 timezone America/New_York limit 5"
+    ),
     "show health",
-    "bars QQQ from 2026-05-22 to 2026-05-26",
+    (
+        "bars QQQ from 2026-07-06T09:30:00-04:00 "
+        "to 2026-07-06T16:00:00-04:00 timezone America/New_York"
+    ),
     "trace sig-001",
     "add symbol QQQ",
     "enable strategy macd",
@@ -146,13 +153,29 @@ def _parse_pending_change(text: str) -> dict[str, object] | None:
 def _parse_signals(text: str) -> dict[str, object] | None:
     chinese_match = re.fullmatch(r"最近\s+([a-zA-Z][a-zA-Z0-9.\-]*)\s+有什么信号", text)
     if chinese_match:
-        return {"intent_type": "read_only", "query": "signals", "symbol": chinese_match.group(1), "limit": 10}
+        return _market_time_clarification_payload(chinese_match.group(1))
 
-    match = re.fullmatch(r"(?:show\s+)?signals(?:\s+([a-zA-Z][a-zA-Z0-9.\-]*))?(?:\s+limit\s+(\d+))?", text)
+    match = re.fullmatch(
+        r"(?:show\s+)?signals"
+        r"(?:\s+([a-zA-Z][a-zA-Z0-9.\-]*))?"
+        r"(?:\s+from\s+(\S+)\s+to\s+(\S+)\s+timezone\s+(\S+))?"
+        r"(?:\s+limit\s+(\d+))?",
+        text,
+    )
     if not match:
         return None
-    symbol, limit = match.groups()
-    return {"intent_type": "read_only", "query": "signals", "symbol": symbol, "limit": int(limit or 10)}
+    symbol, from_ts, to_ts, timezone_name, limit = match.groups()
+    if symbol and not all((from_ts, to_ts, timezone_name)):
+        return _market_time_clarification_payload(symbol)
+    return {
+        "intent_type": "read_only",
+        "query": "signals",
+        "symbol": symbol,
+        "from_ts": from_ts,
+        "to_ts": to_ts,
+        "timezone": timezone_name,
+        "limit": int(limit or 10),
+    }
 
 
 def _parse_health(text: str) -> dict[str, object] | None:
@@ -204,18 +227,30 @@ def _parse_trace(text: str) -> dict[str, object] | None:
 
 def _parse_bars(text: str) -> dict[str, object] | None:
     match = re.fullmatch(
-        r"(?:show\s+)?bars\s+([a-zA-Z][a-zA-Z0-9.\-]*)(?:\s+from\s+([^\s]+))?(?:\s+to\s+([^\s]+))?",
+        r"(?:show\s+)?bars\s+([a-zA-Z][a-zA-Z0-9.\-]*)"
+        r"(?:\s+from\s+(\S+)\s+to\s+(\S+)\s+timezone\s+(\S+))?",
         text,
     )
     if not match:
         return None
-    symbol, from_ts, to_ts = match.groups()
+    symbol, from_ts, to_ts, timezone_name = match.groups()
+    if not all((from_ts, to_ts, timezone_name)):
+        return _market_time_clarification_payload(symbol)
     return {
         "intent_type": "read_only",
         "query": "bars",
         "symbol": symbol,
         "from_ts": from_ts,
         "to_ts": to_ts,
+        "timezone": timezone_name,
+    }
+
+
+def _market_time_clarification_payload(symbol: str) -> dict[str, object]:
+    return {
+        "intent_type": "clarification",
+        "question": explicit_market_time_question(symbol),
+        "candidates": [EXAMPLES[0]],
     }
 
 

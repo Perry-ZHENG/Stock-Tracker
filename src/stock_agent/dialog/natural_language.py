@@ -6,6 +6,10 @@ import re
 from collections.abc import Iterable
 
 from stock_agent.dialog.intents import CommandIntent, validate_intent
+from stock_agent.dialog.time_window import (
+    explicit_market_time_question,
+    extract_explicit_time_window,
+)
 
 _SYMBOL_RE = re.compile(r"\b[A-Za-z]{1,6}(?:[.-][A-Za-z])?\b")
 _ID_RE = re.compile(r"\b(?:sig|trace|chg)[A-Za-z0-9_.:-]*\b", re.IGNORECASE)
@@ -114,6 +118,7 @@ def parse_natural_language_command(text: str) -> CommandIntent | None:
 
     symbol = _extract_symbol(raw_text)
     limit = _extract_limit(raw_text)
+    market_time_window = extract_explicit_time_window(raw_text)
 
     if _contains_any(normalized, "remove", "unfollow", "stop watching") or _contains_any(raw_text, "取消关注", "移除关注", "删除关注"):
         if symbol:
@@ -228,6 +233,8 @@ def parse_natural_language_command(text: str) -> CommandIntent | None:
 
     if _contains_any(normalized, "bars", "ohlcv") or _contains_any(raw_text, "行情", "K线", "bar"):
         if symbol:
+            if market_time_window is None:
+                return _market_time_clarification(raw_text, symbol)
             return validate_intent(
                 {
                     "intent_type": "read_only",
@@ -235,10 +242,13 @@ def parse_natural_language_command(text: str) -> CommandIntent | None:
                     "raw_text": raw_text,
                     "query": "bars",
                     "symbol": symbol,
+                    **market_time_window,
                 }
             )
 
     if _contains_any(normalized, "signal", "signals", "alert", "alerts") or _contains_any(raw_text, "信号", "提醒"):
+        if symbol and market_time_window is None:
+            return _market_time_clarification(raw_text, symbol)
         return validate_intent(
             {
                 "intent_type": "read_only",
@@ -247,6 +257,7 @@ def parse_natural_language_command(text: str) -> CommandIntent | None:
                 "query": "signals",
                 "symbol": symbol,
                 "limit": limit,
+                **(market_time_window or {}),
             }
         )
 
@@ -306,6 +317,23 @@ def _extract_period(text: str) -> str:
 def _extract_target_id(text: str) -> str | None:
     match = _ID_RE.search(text)
     return match.group(0) if match else None
+
+
+def _market_time_clarification(raw_text: str, symbol: str) -> CommandIntent:
+    return validate_intent(
+        {
+            "intent_type": "clarification",
+            "source": "cli",
+            "raw_text": raw_text,
+            "question": explicit_market_time_question(symbol),
+            "candidates": [
+                (
+                    f"查询 {symbol} 从 2026-07-06 09:30 到 "
+                    "2026-07-06 16:00 的信号，America/New_York"
+                )
+            ],
+        }
+    )
 
 
 __all__ = ["parse_natural_language_command"]

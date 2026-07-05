@@ -16,19 +16,39 @@ class CommandIntentTests(unittest.TestCase):
     def test_read_only_query_intent_supports_all_query_names(self) -> None:
         for query in ["signals", "health", "bars", "news", "stats", "trace", "schedule"]:
             with self.subTest(query=query):
+                payload = {
+                    "intent_type": "read_only",
+                    "query": query,
+                    "symbol": "qqq",
+                    "limit": 5,
+                }
+                if query in {"signals", "bars"}:
+                    payload.update(
+                        {
+                            "from_ts": "2026-07-03 09:30",
+                            "to_ts": "2026-07-03 16:00",
+                            "timezone": "America/New_York",
+                        }
+                    )
                 intent = validate_intent(
-                    {
-                        "intent_type": "read_only",
-                        "query": query,
-                        "symbol": "qqq",
-                        "limit": 5,
-                    }
+                    payload
                 )
 
                 self.assertIsInstance(intent, ReadOnlyIntent)
                 self.assertEqual(intent.risk, "read_only")
                 self.assertTrue(intent.executable)
                 self.assertEqual(intent.symbol, "QQQ")
+
+    def test_symbol_market_query_rejects_missing_explicit_time(self) -> None:
+        for query in ("signals", "bars"):
+            with self.subTest(query=query), self.assertRaises(ValidationError):
+                validate_intent(
+                    {
+                        "intent_type": "read_only",
+                        "query": query,
+                        "symbol": "QQQ",
+                    }
+                )
 
     def test_pending_change_intent_covers_config_change_actions(self) -> None:
         for action in ["add_symbol", "remove_symbol", "enable_strategy", "disable_strategy", "change_watch_window"]:

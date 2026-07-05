@@ -159,6 +159,8 @@ def _intent_fields(intent: CommandIntent) -> dict[str, object]:
             fields["from_ts"] = intent.from_ts
         if intent.to_ts:
             fields["to_ts"] = intent.to_ts
+        if intent.timezone:
+            fields["timezone"] = intent.timezone
         return fields
     if isinstance(intent, PendingChangeIntent):
         fields = {"action": intent.action}

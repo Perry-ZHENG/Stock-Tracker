@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from stock_agent.agent.prompts import render_react_prompt
 from stock_agent.agent.tools import AgentToolContext, AgentToolRegistry
+from stock_agent.dialog.time_window import explicit_market_time_question
 
 ModelClient = Callable[[str], str]
 AgentRunStatus = Literal[
@@ -144,12 +145,27 @@ class ReactToolAgent:
                 try:
                     observation = tool.invoke(self.context, arguments)
                 except ValidationError as exc:
-                    observation = {
-                        "ok": False,
-                        "status": "invalid_tool_arguments",
-                        "message": "工具参数未通过校验",
-                        "errors": exc.errors(include_url=False),
-                    }
+                    if action.name in {
+                        "fetch_twelve_data_bars",
+                        "query_bars",
+                        "query_signals",
+                    }:
+                        observation = {
+                            "ok": False,
+                            "status": "needs_user_input",
+                            "question": explicit_market_time_question(
+                                str(arguments.get("symbol") or "") or None
+                            ),
+                            "missing": _missing_market_time_fields(arguments),
+                            "errors": exc.errors(include_url=False),
+                        }
+                    else:
+                        observation = {
+                            "ok": False,
+                            "status": "invalid_tool_arguments",
+                            "message": "工具参数未通过校验",
+                            "errors": exc.errors(include_url=False),
+                        }
                 except Exception as exc:  # pragma: no cover - external boundary
                     observation = {
                         "ok": False,
@@ -178,6 +194,14 @@ class ReactToolAgent:
                 return ReactAgentResult(
                     status="no_suitable_tool",
                     output=str(observation.get("message") or ""),
+                    selected_tool=action.name,
+                    tool_calls=tool_calls,
+                    model_steps=step,
+                )
+            if status == "provider_unavailable":
+                return ReactAgentResult(
+                    status="failed",
+                    output=str(observation.get("message") or "Twelve Data 暂时不可用。"),
                     selected_tool=action.name,
                     tool_calls=tool_calls,
                     model_steps=step,
@@ -266,6 +290,14 @@ def _successful_tool_output(tool_name: str, observation: dict[str, Any]) -> str:
     if count == 0:
         return f"{tool_name} 执行成功，未找到匹配结果。"
     return f"{tool_name} 执行成功。"
+
+
+def _missing_market_time_fields(arguments: dict[str, Any]) -> list[str]:
+    return [
+        field
+        for field in ("from_ts", "to_ts", "timezone")
+        if not arguments.get(field)
+    ]
 
 
 __all__ = [

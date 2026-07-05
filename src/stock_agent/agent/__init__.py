@@ -1,8 +1,4 @@
-"""Model-driven tool-routing agent primitives.
-
-This package is intentionally not connected to production inputs until its
-prompt and tool policy have been reviewed.
-"""
+"""Model-driven, policy-constrained tool-routing agent primitives."""
 
 from stock_agent.agent.prompts import REACT_UI_PROMPT_TEMPLATE, render_react_prompt
 from stock_agent.agent.runner import (
@@ -15,6 +11,7 @@ from stock_agent.agent.tools import (
     AgentTool,
     AgentToolContext,
     AgentToolRegistry,
+    FetchTwelveDataBarsArgs,
     build_default_tool_registry,
 )
 
@@ -22,6 +19,7 @@ __all__ = [
     "AgentTool",
     "AgentToolContext",
     "AgentToolRegistry",
+    "FetchTwelveDataBarsArgs",
     "REACT_UI_PROMPT_TEMPLATE",
     "ReactAgentResult",
     "ReactToolAgent",

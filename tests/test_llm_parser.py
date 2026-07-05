@@ -9,9 +9,8 @@ class LlmParserTests(unittest.TestCase):
     def test_disabled_llm_falls_back_to_structured_parser_without_key(self) -> None:
         intent = LlmParser(enabled=False).parse("show signals QQQ limit 5")
 
-        self.assertIsInstance(intent, ReadOnlyIntent)
-        self.assertEqual(intent.query, "signals")
-        self.assertEqual(intent.symbol, "QQQ")
+        self.assertIsInstance(intent, ClarificationIntent)
+        self.assertIn("IANA 时区", intent.question)
 
     def test_mock_llm_output_must_validate_against_intent_schema(self) -> None:
         parser = LlmParser(

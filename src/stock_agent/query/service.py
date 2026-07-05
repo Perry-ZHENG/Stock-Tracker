@@ -99,7 +99,41 @@ class QueryService:
         connection = open_database(sqlite_path)
         try:
             if query == "signals":
-                rows = list_signals(connection, limit=limit)
+                if symbol and (from_value is None or to_value is None):
+                    text = "query_error=missing explicit time range for symbol-specific signals\n"
+                    return QueryResult(
+                        ok=False,
+                        query=query,
+                        text=text,
+                        rows=[],
+                        message="symbol-specific signals require from and to timestamps",
+                    )
+                try:
+                    start_at = parse_utc_bound(from_value, end=False)
+                    end_at = parse_utc_bound(to_value, end=True)
+                except ValueError as exc:
+                    text = f"query_error=invalid time range\nerror={exc}\n"
+                    return QueryResult(
+                        ok=False,
+                        query=query,
+                        text=text,
+                        rows=[],
+                        message=str(exc),
+                    )
+                fetch_limit = 100 if symbol or start_at or end_at else limit
+                rows = list_signals(connection, limit=fetch_limit)
+                if symbol:
+                    normalized_symbol = symbol.upper()
+                    rows = [
+                        row
+                        for row in rows
+                        if row.symbol.upper() == normalized_symbol
+                    ]
+                if start_at:
+                    rows = [row for row in rows if row.timestamp >= start_at]
+                if end_at:
+                    rows = [row for row in rows if row.timestamp <= end_at]
+                rows = rows[:limit]
                 text = _format_signals(rows)
             elif query == "health":
                 rows = list_health_metrics(connection, limit=limit)

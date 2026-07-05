@@ -1,7 +1,6 @@
 # AI Agent Prompt 与 Tool Calling 草案（待审核）
 
-状态：**未接入 FastAPI、CLI 或 Telegram**。本文件和 `stock_agent.agent`
-仅用于审核 Prompt、工具边界和参数协议。
+状态：ReAct Agent 已接入 FastAPI Agent 路径；本文件记录 Prompt、工具边界和参数协议。
 
 ## 目标
 
@@ -22,7 +21,7 @@ Agent 不负责自由生成或执行 Python，不允许绕过工具注册表。
 
 ```text
 Thought: 用户希望查询 QQQ 的 MACD 信号。
-Action: query_signals[{"symbol":"QQQ","strategy_id":"macd","trading_date":null,"limit":10}]
+Action: query_signals[{"symbol":"QQQ","strategy_id":"macd","from_ts":"2026-07-06 09:30","to_ts":"2026-07-06 16:00","timezone":"America/New_York","limit":10}]
 ```
 
 参数不足：
@@ -50,8 +49,9 @@ Action: Finish[最终说明。]
 
 | 工具 | 中文备注 | 对应现有脚本/模块 | 关键参数 | 调用示例 |
 |---|---|---|---|---|
-| `query_signals` | 查询系统已经计算并保存的观察信号，可按股票、策略和交易日期过滤；不能创建新策略 | `QueryService.execute("signals")` | `symbol`、`strategy_id`、`trading_date` 均可选 | `query_signals[{"symbol":"QQQ","strategy_id":"macd","limit":10}]` |
-| `query_bars` | 查询某只股票的历史 K 线；股票代码是必填项 | `QueryService.execute("bars")` | 必填 `symbol`；可选 `from_ts`、`to_ts` | `query_bars[{"symbol":"QQQ","from_ts":"2026-07-01T13:30:00Z"}]` |
+| `query_signals` | 查询系统已经计算并保存的观察信号，可按股票、策略和时间范围过滤；不能创建新策略 | `QueryService.execute("signals")` | 指定 `symbol` 时必填 `from_ts`、`to_ts`、`timezone` | `query_signals[{"symbol":"QQQ","from_ts":"2026-07-06 09:30","to_ts":"2026-07-06 16:00","timezone":"America/New_York"}]` |
+| `query_bars` | 查询本地 Data Lake 中某只股票或指数的历史 K 线 | `QueryService.execute("bars")` | 必填 `symbol`、`from_ts`、`to_ts`、`timezone` | `query_bars[{"symbol":"QQQ","from_ts":"2026-07-06 09:30","to_ts":"2026-07-06 16:00","timezone":"America/New_York"}]` |
+| `fetch_twelve_data_bars` | 直接请求 Twelve Data 的远程 OHLCV，不读取本地缓存、不运行策略 | `TwelveDataProvider.fetch_intraday_bars()` | 必填 `symbol`、`from_ts`、`to_ts`、`timezone`；可选 `interval`、`limit` | `fetch_twelve_data_bars[{"symbol":"QQQ","from_ts":"2026-07-06 09:30","to_ts":"2026-07-06 10:30","timezone":"America/New_York","interval":"1m"}]` |
 | `query_health` | 查看 Worker、行情 Provider、Supervisor 等模块是否健康 | `QueryService.execute("health")` | 可选 `limit` | `query_health[{"limit":10}]` |
 | `query_trace` | 解释某个信号从行情、策略计算到审核的追踪链 | `QueryService.execute("trace")` | 必填 `target_id`，可以是 signal_id 或 trace_id | `query_trace[{"target_id":"sig-001"}]` |
 | `query_news` | 查询市场或指定股票的新闻；当前新闻 Provider 可能尚未配置 | `QueryService.execute("news")` | 可选 `symbol`、`limit` | `query_news[{"symbol":"AAPL","limit":5}]` |
@@ -68,10 +68,18 @@ Action: Finish[最终说明。]
 - `query_*` 工具均为只读工具，不修改配置，也不触发交易。
 - `query_signals` 读取的是已经由 Worker 生成的信号，不会临时创建信号。
 - `query_bars` 缺少 `symbol` 时，Agent 必须调用 `ask_user`，不能猜测。
+- 用户明确要求 Twelve Data、实时行情或最新远程行情时，调用
+  `fetch_twelve_data_bars`；`query_bars` 只读取本地 Data Lake。
+- 查询具体股票或指数的行情、K 线或信号时，必须同时提供开始时间、结束时间和
+  IANA 时区；时间必须精确到时分。缺少任一项时调用 `ask_user`，不得把“今天”
+  “最近”等相对时间静默转换为模型猜测的时间。
 - `ask_user` 用于“有合适工具但缺参数”的情况。
 - `no_suitable_tool` 用于“系统根本没有对应工具”的情况。
 - “新增 Order Book Imbalance 信号”当前应调用 `no_suitable_tool`。
-- “查询 QQQ 今天的 MACD 信号”应调用 `query_signals`，参数为 QQQ、MACD 和当天日期。
+- “查询 QQQ 今天的 MACD 信号”缺少具体起止时间和时区，应先调用 `ask_user`。
+
+当前 Agent Tool 为进程内 Python 工具，不使用 MCP。若未来需要让 VS Code、Codex
+或其他外部 Agent 客户端发现并调用这些工具，可再增加 MCP Server 适配层。
 
 首版没有注册下单、资金、账户、密钥读取、任意 Python、任意 shell、创建新策略、
 启动常驻服务等工具。

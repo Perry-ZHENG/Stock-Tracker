@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Literal
-from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from stock_agent.config_loader import RuntimeConfigContext, load_config
+from stock_agent.dialog.time_window import normalize_explicit_time_window
+from stock_agent.providers import (
+    TwelveDataProviderError,
+    create_twelve_data_provider,
+)
 from stock_agent.query import QueryService
 
 ToolRisk = Literal["read_only", "control"]
@@ -98,17 +102,69 @@ class QuerySignalsArgs(BaseModel):
         default=None,
         description="策略标识，例如 macd；仅在用户明确指定时填写",
     )
-    trading_date: date | None = Field(
+    from_ts: str | None = Field(
         default=None,
-        description="交易日期，ISO 8601 格式 YYYY-MM-DD",
+        description="指定股票/指数查询的开始日期时间，必须精确到时分",
+    )
+    to_ts: str | None = Field(
+        default=None,
+        description="指定股票/指数查询的结束日期时间，必须精确到时分",
+    )
+    timezone: str | None = Field(
+        default=None,
+        description="明确的 IANA 时区，例如 America/New_York",
     )
     limit: int = Field(default=10, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def _require_symbol_time_window(self) -> "QuerySignalsArgs":
+        if self.symbol:
+            self.from_ts, self.to_ts = normalize_explicit_time_window(
+                from_ts=self.from_ts,
+                to_ts=self.to_ts,
+                timezone_name=self.timezone,
+            )
+        return self
 
 
 class QueryBarsArgs(BaseModel):
     symbol: str = Field(min_length=1, max_length=12)
-    from_ts: str | None = None
-    to_ts: str | None = None
+    from_ts: str
+    to_ts: str
+    timezone: str
+
+    @model_validator(mode="after")
+    def _require_time_window(self) -> "QueryBarsArgs":
+        self.from_ts, self.to_ts = normalize_explicit_time_window(
+            from_ts=self.from_ts,
+            to_ts=self.to_ts,
+            timezone_name=self.timezone,
+        )
+        return self
+
+
+class FetchTwelveDataBarsArgs(BaseModel):
+    symbol: str = Field(
+        min_length=1,
+        max_length=12,
+        description="明确的股票或指数代码，例如 QQQ、AAPL、SPY",
+    )
+    from_ts: str = Field(description="查询开始日期时间，必须精确到时分")
+    to_ts: str = Field(description="查询结束日期时间，必须精确到时分")
+    timezone: str = Field(
+        description="明确的 IANA 时区，例如 America/New_York",
+    )
+    interval: Literal["1m", "5m", "15m", "30m"] = "1m"
+    limit: int = Field(default=30, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def _require_time_window(self) -> "FetchTwelveDataBarsArgs":
+        self.from_ts, self.to_ts = normalize_explicit_time_window(
+            from_ts=self.from_ts,
+            to_ts=self.to_ts,
+            timezone_name=self.timezone,
+        )
+        return self
 
 
 class QueryLimitArgs(BaseModel):
@@ -146,12 +202,12 @@ def build_default_tool_registry() -> AgentToolRegistry:
     return AgentToolRegistry(
         [
             # 查询已经由 Worker 和策略脚本计算、Supervisor 审核并保存的观察信号。
-            # 支持按股票代码、策略名称和交易日期过滤，但不能创建新策略或新信号。
+            # 支持按股票代码、策略名称和时间范围过滤，但不能创建新策略或新信号。
             AgentTool(
                 name="query_signals",
                 description=(
-                    "查询已经由策略脚本产生并保存的信号；可按股票、策略和交易日期过滤。"
-                    "不能创建新策略。"
+                    "查询已经由策略脚本产生并保存的信号；可按股票、策略和时间范围过滤。"
+                    "指定股票或指数时必须提供 from_ts、to_ts 和 IANA timezone。不能创建新策略。"
                 ),
                 args_model=QuerySignalsArgs,
                 handler=_query_signals,
@@ -160,9 +216,26 @@ def build_default_tool_registry() -> AgentToolRegistry:
             # 如果用户没有明确股票代码，Agent 应先调用 ask_user，而不是自行猜测。
             AgentTool(
                 name="query_bars",
-                description="查询某个股票在指定 UTC 时间范围内的历史 K 线。",
+                description=(
+                    "查询某个股票或指数在指定时间范围内的历史 K 线；"
+                    "必须提供 from_ts、to_ts 和 IANA timezone。"
+                ),
                 args_model=QueryBarsArgs,
                 handler=_query_bars,
+            ),
+            # 直接调用 Twelve Data REST API 获取远程行情，不读取本地 Data Lake，
+            # 也不启动 Worker、运行策略或生成信号。适合用户明确要求查看实时/最新
+            # Twelve Data 数据的场景；必须提供完整时间范围和 IANA 时区。
+            AgentTool(
+                name="fetch_twelve_data_bars",
+                description=(
+                    "直接从 Twelve Data REST API 获取指定股票或指数的远程 OHLCV 行情。"
+                    "当用户明确要求 Twelve Data、实时行情或最新远程行情时使用；"
+                    "必须提供 symbol、from_ts、to_ts、IANA timezone。"
+                    "该工具不读取本地缓存、不运行策略、不生成信号。"
+                ),
+                args_model=FetchTwelveDataBarsArgs,
+                handler=_fetch_twelve_data_bars,
             ),
             # 查询 Worker、行情 Provider、Supervisor 等运行模块的健康指标。
             # 这是只读诊断工具，不会启动、停止或重启任何服务。
@@ -260,12 +333,13 @@ def _query_signals(context: AgentToolContext, raw_args: BaseModel) -> dict[str, 
             for row in rows
             if strategy_id in getattr(row, "strategy_id", "").lower()
         ]
-    if args.trading_date:
-        timezone = ZoneInfo(context.config_context.config.schedule.timezone)
+    if args.from_ts and args.to_ts:
+        start_at = datetime.fromisoformat(args.from_ts.replace("Z", "+00:00"))
+        end_at = datetime.fromisoformat(args.to_ts.replace("Z", "+00:00"))
         rows = [
             row
             for row in rows
-            if getattr(row, "timestamp").astimezone(timezone).date() == args.trading_date
+            if start_at <= getattr(row, "timestamp") <= end_at
         ]
     rows = rows[: args.limit]
     return _tool_result(
@@ -285,6 +359,46 @@ def _query_bars(context: AgentToolContext, raw_args: BaseModel) -> dict[str, Any
         to_value=args.to_ts,
     )
     return _from_query_result("query_bars", result)
+
+
+def _fetch_twelve_data_bars(
+    context: AgentToolContext,
+    raw_args: BaseModel,
+) -> dict[str, Any]:
+    args = FetchTwelveDataBarsArgs.model_validate(raw_args.model_dump())
+    provider_config = context.config_context.config.provider.twelve_data
+    try:
+        provider = create_twelve_data_provider(
+            api_key_env=provider_config.api_key_env,
+            base_url=provider_config.base_url,
+            request_timeout_sec=provider_config.request_timeout_sec,
+            max_retries=provider_config.max_retries,
+            credit_budget_per_minute=provider_config.credit_budget_per_minute,
+        )
+        bars = provider.fetch_intraday_bars(
+            symbols=[args.symbol.upper()],
+            interval=args.interval,
+            start=datetime.fromisoformat(args.from_ts.replace("Z", "+00:00")),
+            end=datetime.fromisoformat(args.to_ts.replace("Z", "+00:00")),
+        )
+    except TwelveDataProviderError as exc:
+        return {
+            "ok": False,
+            "status": "provider_unavailable",
+            "tool": "fetch_twelve_data_bars",
+            "message": str(exc),
+        }
+
+    selected_bars = bars[-args.limit :]
+    return _tool_result(
+        ok=True,
+        tool="fetch_twelve_data_bars",
+        rows=selected_bars,
+        message=(
+            f"Twelve Data returned {len(selected_bars)} "
+            f"{args.interval} bar(s) for {args.symbol.upper()}"
+        ),
+    )
 
 
 def _query_health(context: AgentToolContext, raw_args: BaseModel) -> dict[str, Any]:
@@ -428,6 +542,7 @@ __all__ = [
     "AgentToolContext",
     "AgentToolRegistry",
     "AskUserArgs",
+    "FetchTwelveDataBarsArgs",
     "NoSuitableToolArgs",
     "QueryBarsArgs",
     "QueryLimitArgs",

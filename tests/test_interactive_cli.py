@@ -21,7 +21,10 @@ class InteractiveCliTests(unittest.TestCase):
 
             exit_code = run_interactive_cli(
                 root,
-                input_stream=io.StringIO("最近 QQQ 有什么信号\nexit\n"),
+                input_stream=io.StringIO(
+                    "查询 QQQ 从 2026-05-22 09:30 到 2026-05-22 16:00 "
+                    "的信号，America/New_York\nyes\nexit\n"
+                ),
                 output_stream=output,
             )
 

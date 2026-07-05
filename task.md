@@ -1845,3 +1845,48 @@
 - Agent 只能调用注册工具，尚不能动态创建新策略或任意执行 Python。
 - 最终买卖信号向所有已激活交互界面的统一广播仍属于后续任务。
 - `src/stock_agent/commands/web.py` 已提供启动实现，但 `stock-agent web` CLI 子命令尚未注册。
+
+### T-807：单标的动态查询时间约束
+
+状态：`done`
+
+新增能力：
+
+- 查询具体股票或指数的行情、K 线或信号时，必须提供开始时间、结束时间和明确的 IANA 时区。
+- 开始和结束时间必须包含完整日期与时分，结束时间必须晚于开始时间。
+- “今天”“最近”“开盘后”等相对时间不能由模型自行猜测，缺少信息时统一返回追问。
+- 时间按用户指定时区解析，并在进入 QueryService 前归一化为 UTC。
+- Prompt、Tool 参数 Schema、CommandIntent 和运行时执行边界均执行相同约束。
+- 全局信号列表、健康状态、交易日程等非单标的查询不受该规则影响。
+
+验收结果：
+
+- 缺少时间范围或时区的股票/指数动态查询返回 `ClarificationIntent` 或 `needs_user_input`。
+- 无效时区、只有日期没有具体时间、结束时间早于开始时间均被拒绝。
+- CLI、Telegram、FastAPI/ReAct Agent 使用一致的时间约束。
+- 完整测试结果：`311 passed, 1 xfailed`。
+
+### T-808：Agent 直接查询 Twelve Data 行情
+
+状态：`done`
+
+新增能力：
+
+- 新增只读工具 `fetch_twelve_data_bars`，复用现有 Twelve Data REST Provider。
+- Agent 可根据中英文自然语言提取股票/指数、起止时间、IANA 时区、K 线周期和返回数量。
+- 工具直接请求 Twelve Data，不依赖 Worker 定时抓取，也不读取本地 Data Lake。
+- 返回标准化 OHLCV Bar，不运行策略、不生成信号、不修改配置或数据库。
+- 缺少股票、起止时间或时区时进入追问；Provider 不可用时返回受控错误。
+
+技术决策：
+
+- 当前不引入 MCP。Agent 与 Provider 位于同一 Python 进程，直接注册 Tool 的链路更短。
+- 若未来需要向 VS Code、Codex 或其他外部 Agent 暴露工具，再增加 MCP Server 适配层。
+- 完整测试结果：`313 passed, 1 xfailed`。
+
+自然语言示例：
+
+```text
+请直接从 Twelve Data 获取 QQQ 在 2026-07-06 09:30 到
+2026-07-06 10:30 America/New_York 的 1 分钟行情
+```

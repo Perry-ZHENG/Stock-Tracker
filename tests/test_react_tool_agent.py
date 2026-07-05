@@ -2,6 +2,8 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from stock_agent.agent import (
     AgentToolContext,
@@ -9,7 +11,7 @@ from stock_agent.agent import (
     build_default_tool_registry,
     parse_react_response,
 )
-from stock_agent.schemas import Signal
+from stock_agent.schemas import Bar, Signal
 from stock_agent.storage.repositories import insert_signal
 from stock_agent.storage.sqlite import initialize_runtime_database
 
@@ -47,7 +49,11 @@ class ReactToolAgentTests(unittest.TestCase):
                 [
                     (
                         "Thought: 查询 QQQ 的 MACD 信号。\n"
-                        'Action: query_signals[{"symbol":"QQQ","strategy_id":"macd","limit":10}]'
+                        "Action: query_signals["
+                        '{"symbol":"QQQ","strategy_id":"macd",'
+                        '"from_ts":"2026-07-03T09:30:00-04:00",'
+                        '"to_ts":"2026-07-03T16:00:00-04:00",'
+                        '"timezone":"America/New_York","limit":10}]'
                     )
                 ]
             )
@@ -64,6 +70,77 @@ class ReactToolAgentTests(unittest.TestCase):
         self.assertEqual(result.tool_calls[0].observation["count"], 1)
         self.assertIn("sig-macd-001", result.output)
         self.assertEqual(len(model.prompts), 1)
+
+    def test_symbol_query_without_time_is_forced_to_ask_user(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            model = SequenceModel(
+                [
+                    (
+                        "Thought: 查询 QQQ 的信号。\n"
+                        'Action: query_signals[{"symbol":"QQQ","limit":10}]'
+                    )
+                ]
+            )
+            agent = ReactToolAgent(
+                model_client=model,
+                registry=build_default_tool_registry(),
+                context=AgentToolContext.load(Path(tmp_dir)),
+            )
+
+            result = agent.run("查询 QQQ 的信号")
+
+        self.assertEqual(result.status, "needs_user_input")
+        self.assertEqual(result.selected_tool, "query_signals")
+        self.assertIn("开始时间", result.output)
+        self.assertIn("IANA 时区", result.output)
+
+    def test_routes_explicit_live_request_to_twelve_data_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            model = SequenceModel(
+                [
+                    (
+                        "Thought: 用户明确要求 Twelve Data 实时行情。\n"
+                        "Action: fetch_twelve_data_bars["
+                        '{"symbol":"QQQ","from_ts":"2026-07-03 09:30",'
+                        '"to_ts":"2026-07-03 10:00","timezone":"America/New_York",'
+                        '"interval":"1m","limit":10}]'
+                    )
+                ]
+            )
+            agent = ReactToolAgent(
+                model_client=model,
+                registry=build_default_tool_registry(),
+                context=AgentToolContext.load(Path(tmp_dir)),
+            )
+            fake_provider = SimpleNamespace(
+                fetch_intraday_bars=lambda **_kwargs: [
+                    Bar(
+                        bar_id="QQQ-1m-2026-07-03T13:31:00Z-twelve_data",
+                        symbol="QQQ",
+                        timestamp=datetime(2026, 7, 3, 13, 31, tzinfo=UTC),
+                        interval="1m",
+                        open=500.0,
+                        high=501.0,
+                        low=499.5,
+                        close=500.5,
+                        volume=1000,
+                        source="twelve_data",
+                    )
+                ]
+            )
+
+            with patch(
+                "stock_agent.agent.tools.create_twelve_data_provider",
+                return_value=fake_provider,
+            ):
+                result = agent.run(
+                    "请直接查询 Twelve Data：QQQ 在 2026-07-03 09:30 到 "
+                    "10:00 America/New_York 的实时行情"
+                )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.selected_tool, "fetch_twelve_data_bars")
+        self.assertIn('"source": "twelve_data"', result.output)
 
     def test_missing_argument_uses_ask_user(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

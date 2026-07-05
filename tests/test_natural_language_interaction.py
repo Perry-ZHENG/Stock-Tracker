@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from stock_agent.commands.interactive_cli import run_interactive_cli
 from stock_agent.dialog.interaction import build_interaction_plan
-from stock_agent.dialog.intents import HighRiskBlockedIntent, PendingChangeIntent, ReadOnlyIntent
+from stock_agent.dialog.intents import ClarificationIntent, HighRiskBlockedIntent, PendingChangeIntent, ReadOnlyIntent
 from stock_agent.dialog.langchain_adapter import build_langchain_client
 from stock_agent.schemas import Signal
 from stock_agent.storage.repositories import insert_signal, list_config_changes
@@ -17,24 +17,21 @@ from stock_agent.config import DEFAULT_CONFIG, validate_config
 
 
 class NaturalLanguageInteractionTests(unittest.TestCase):
-    def test_natural_language_signal_query_builds_confirmable_plan(self) -> None:
+    def test_natural_language_signal_query_without_time_builds_clarification(self) -> None:
         plan = build_interaction_plan("show me latest QQQ signals")
 
-        self.assertTrue(plan.requires_confirmation)
+        self.assertFalse(plan.requires_confirmation)
         self.assertEqual(plan.parser_name, "natural_fields")
-        self.assertIsInstance(plan.intent, ReadOnlyIntent)
-        self.assertEqual(plan.fields["query"], "signals")
-        self.assertEqual(plan.fields["symbol"], "QQQ")
-        self.assertEqual(plan.command_preview, "stock-agent cli signals --symbol QQQ")
+        self.assertIsInstance(plan.intent, ClarificationIntent)
+        self.assertIn("IANA 时区", plan.fields["question"])
 
-    def test_chinese_natural_language_signal_question_wakes_command(self) -> None:
+    def test_chinese_natural_language_signal_question_requires_time(self) -> None:
         plan = build_interaction_plan("怎么查看 QQQ 最近的信号？")
 
-        self.assertTrue(plan.requires_confirmation)
+        self.assertFalse(plan.requires_confirmation)
         self.assertEqual(plan.parser_name, "natural_fields")
-        self.assertIsInstance(plan.intent, ReadOnlyIntent)
-        self.assertEqual(plan.fields["query"], "signals")
-        self.assertEqual(plan.fields["symbol"], "QQQ")
+        self.assertIsInstance(plan.intent, ClarificationIntent)
+        self.assertIn("开始时间", plan.fields["question"])
 
     def test_natural_language_pending_change_builds_confirmable_plan(self) -> None:
         plan = build_interaction_plan("please add QQQ to my watchlist")
@@ -54,7 +51,10 @@ class NaturalLanguageInteractionTests(unittest.TestCase):
 
             exit_code = run_interactive_cli(
                 root,
-                input_stream=io.StringIO("show me latest QQQ signals\nyes\nexit\n"),
+                input_stream=io.StringIO(
+                    "show me QQQ signals from 2026-05-22 09:30 to "
+                    "2026-05-22 16:00 America/New_York\nyes\nexit\n"
+                ),
                 output_stream=output,
             )
 
@@ -73,7 +73,10 @@ class NaturalLanguageInteractionTests(unittest.TestCase):
 
             exit_code = run_interactive_cli(
                 root,
-                input_stream=io.StringIO("show me latest QQQ signals\nno\nexit\n"),
+                input_stream=io.StringIO(
+                    "show me QQQ signals from 2026-05-22 09:30 to "
+                    "2026-05-22 16:00 America/New_York\nno\nexit\n"
+                ),
                 output_stream=output,
             )
 

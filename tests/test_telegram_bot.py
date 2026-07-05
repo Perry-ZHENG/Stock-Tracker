@@ -39,7 +39,16 @@ class TelegramBotTests(unittest.TestCase):
             bot = TelegramBot(root=root, connection=connection, settings=_settings())
 
             slash = bot.handle_update(TelegramUpdate(user_id=1, chat_id=100, text="/signals"))
-            natural = bot.handle_update(TelegramUpdate(user_id=1, chat_id=100, text="最近 QQQ 有什么信号"))
+            natural = bot.handle_update(
+                TelegramUpdate(
+                    user_id=1,
+                    chat_id=100,
+                    text=(
+                        "查询 QQQ 从 2026-05-22 09:30 到 2026-05-22 16:00 "
+                        "的信号，America/New_York"
+                    ),
+                )
+            )
             connection.close()
 
         self.assertTrue(slash.ok)

@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, TypeAdapter, field_validator
+from pydantic import Field, TypeAdapter, field_validator, model_validator
 
+from stock_agent.dialog.time_window import (
+    normalize_explicit_time_window,
+    requires_explicit_market_time,
+)
 from stock_agent.schemas import StrictSchema
 
 IntentRisk = Literal["read_only", "pending_change", "local_admin", "high_risk_blocked"]
@@ -49,6 +53,7 @@ class ReadOnlyIntent(IntentBase):
     target_id: str | None = None
     from_ts: str | None = None
     to_ts: str | None = None
+    timezone: str | None = None
 
     @field_validator("symbol")
     @classmethod
@@ -59,6 +64,16 @@ class ReadOnlyIntent(IntentBase):
     @classmethod
     def _symbols_to_upper(cls, value: list[str]) -> list[str]:
         return [symbol.upper() for symbol in value]
+
+    @model_validator(mode="after")
+    def _require_market_time_window(self) -> "ReadOnlyIntent":
+        if requires_explicit_market_time(self.query, self.symbol):
+            self.from_ts, self.to_ts = normalize_explicit_time_window(
+                from_ts=self.from_ts,
+                to_ts=self.to_ts,
+                timezone_name=self.timezone,
+            )
+        return self
 
 
 class PendingChangeIntent(IntentBase):
