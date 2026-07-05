@@ -19,14 +19,20 @@ REQUIRED_TABLES = (
     "strategy_snapshots",
     "security_audit",
     "abnormal_bars",
+    "agent_runs",
+    "input_control_state",
+    "input_interface_presence",
+    "input_switch_requests",
 )
 
 
 def open_database(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
+    connection = sqlite3.connect(path, timeout=5)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA busy_timeout = 5000")
     _create_tables(connection)
     return connection
 
@@ -182,6 +188,60 @@ def _create_tables(connection: sqlite3.Connection) -> None:
             reviewed_by TEXT,
             review_note TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS agent_runs (
+            run_id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            raw_text TEXT NOT NULL,
+            parser_name TEXT NOT NULL,
+            intent_json TEXT,
+            risk TEXT,
+            status TEXT NOT NULL,
+            command_preview TEXT,
+            output TEXT,
+            trace_id TEXT,
+            duration_ms REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_updated_at
+        ON agent_runs(updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS input_control_state (
+            singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+            active_source TEXT NOT NULL
+                CHECK (active_source IN ('cli', 'telegram', 'fastapi')),
+            active_actor_ref TEXT NOT NULL,
+            activated_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS input_interface_presence (
+            source TEXT PRIMARY KEY
+                CHECK (source IN ('cli', 'telegram', 'fastapi')),
+            actor_ref TEXT NOT NULL,
+            online INTEGER NOT NULL DEFAULT 1 CHECK (online IN (0, 1)),
+            last_seen_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS input_switch_requests (
+            request_id TEXT PRIMARY KEY,
+            from_source TEXT NOT NULL
+                CHECK (from_source IN ('cli', 'telegram', 'fastapi')),
+            to_source TEXT NOT NULL
+                CHECK (to_source IN ('cli', 'telegram', 'fastapi')),
+            requested_by TEXT NOT NULL,
+            status TEXT NOT NULL
+                CHECK (status IN ('pending', 'approved', 'rejected', 'expired')),
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            decided_at TEXT,
+            decided_by TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_input_switch_pending
+        ON input_switch_requests(from_source, status, created_at);
         """
     )
     connection.commit()

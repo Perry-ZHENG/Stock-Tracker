@@ -24,7 +24,7 @@ class ConfigLoaderTests(unittest.TestCase):
 
         self.assertFalse(context.used_defaults)
         self.assertEqual(context.config_path, root / "configs" / "config.yaml")
-        self.assertEqual(context.config.provider.default, "csv_demo")
+        self.assertEqual(context.config.provider.default, "twelve_data")
         self.assertEqual(len(context.version), 16)
 
     def test_stock_agent_config_env_overrides_default_path(self) -> None:

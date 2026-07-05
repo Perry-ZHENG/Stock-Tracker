@@ -13,6 +13,7 @@ from pathlib import Path
 from stock_agent.config_changes import create_config_change
 from stock_agent.config_loader import RuntimeConfigContext, load_config
 from stock_agent.dialog.intents import ClarificationIntent, HighRiskBlockedIntent, PendingChangeIntent, ReadOnlyIntent
+from stock_agent.dialog.input_gate import InputGate, InputGateError
 from stock_agent.dialog.llm_parser import LlmParser
 from stock_agent.query import QueryService
 from stock_agent.security.trading_firewall import TradingActionFirewall
@@ -66,6 +67,11 @@ class TelegramBot:
         self.settings = settings
         self.config_context = config_context or load_config(root)
         self.llm_parser = llm_parser or LlmParser(enabled=False)
+        self.input_gate = InputGate.from_config(
+            connection,
+            self.config_context.config.input_control,
+        )
+        self.input_gate.heartbeat("telegram", actor_ref="telegram_bot")
 
     def handle_update(self, update: TelegramUpdate) -> TelegramOutboundMessage:
         role = resolve_telegram_role(
@@ -77,6 +83,39 @@ class TelegramBot:
             return TelegramOutboundMessage(ok=False, chat_id=update.chat_id, role=None, text="telegram_error=user is not allowed")
         if self.settings.allowed_chat_ids and update.chat_id not in set(self.settings.allowed_chat_ids):
             return TelegramOutboundMessage(ok=False, chat_id=update.chat_id, role=role, text="telegram_error=chat is not allowed")
+
+        actor_ref = f"user:{update.user_id}:chat:{update.chat_id}"
+        control_result = self._handle_input_control(update, role=role, actor_ref=actor_ref)
+        if control_result is not None:
+            return control_result
+
+        preparsed_intent = None
+        if not update.text.strip().startswith("/"):
+            preparsed_intent = self.llm_parser.parse(update.text)
+            if isinstance(preparsed_intent, HighRiskBlockedIntent):
+                decision = TradingActionFirewall(self.connection).inspect_intent(
+                    preparsed_intent,
+                    source="telegram",
+                    actor_ref=actor_ref,
+                )
+                return TelegramOutboundMessage(
+                    ok=False,
+                    chat_id=update.chat_id,
+                    role=role,
+                    text=decision.message,
+                )
+
+        decision = self.input_gate.check("telegram", actor_ref=actor_ref)
+        if not decision.allowed:
+            return TelegramOutboundMessage(
+                ok=False,
+                chat_id=update.chat_id,
+                role=role,
+                text=(
+                    f"input_status=blocked\n{decision.message}\n"
+                    "发送 /input request 申请切换至 Telegram。"
+                ),
+            )
 
         if update.text.strip().startswith("/") or update.text.strip().split(" ", 1)[0].lower() in {
             "signals",
@@ -99,7 +138,7 @@ class TelegramBot:
             )
             return _outbound(update.chat_id, result)
 
-        intent = self.llm_parser.parse(update.text)
+        intent = preparsed_intent or self.llm_parser.parse(update.text)
         if isinstance(intent, ReadOnlyIntent):
             result = QueryService(self.root, config_context=self.config_context).execute(
                 intent.query,
@@ -138,6 +177,99 @@ class TelegramBot:
         if isinstance(intent, ClarificationIntent):
             return TelegramOutboundMessage(ok=False, chat_id=update.chat_id, role=role, text=f"{intent.question}\nexamples: {', '.join(intent.candidates)}")
         return TelegramOutboundMessage(ok=False, chat_id=update.chat_id, role=role, text="telegram_error=unsupported intent")
+
+    def pending_approval_messages(self, *, chat_id: int) -> list[TelegramOutboundMessage]:
+        """Return approval prompts for delivery by the Telegram transport loop."""
+        messages: list[TelegramOutboundMessage] = []
+        for request in self.input_gate.pending_for("telegram"):
+            messages.append(
+                TelegramOutboundMessage(
+                    ok=True,
+                    chat_id=chat_id,
+                    role=None,
+                    text=(
+                        "input_switch_approval_required=true\n"
+                        f"request_id={request.request_id}\n"
+                        f"{request.to_source} 正在申请成为输入接口。\n"
+                        f"批准：/input approve {request.request_id}\n"
+                        f"拒绝：/input reject {request.request_id}"
+                    ),
+                )
+            )
+        return messages
+
+    def _handle_input_control(
+        self,
+        update: TelegramUpdate,
+        *,
+        role: str,
+        actor_ref: str,
+    ) -> TelegramOutboundMessage | None:
+        parts = update.text.strip().split()
+        if not parts or parts[0].lower() not in {"/input", "input"}:
+            return None
+        if len(parts) < 2:
+            return TelegramOutboundMessage(
+                ok=False,
+                chat_id=update.chat_id,
+                role=role,
+                text="usage: /input status|request|approve REQUEST_ID|reject REQUEST_ID",
+            )
+        action = parts[1].lower()
+        try:
+            if action == "status":
+                state = self.input_gate.state()
+                return TelegramOutboundMessage(
+                    ok=True,
+                    chat_id=update.chat_id,
+                    role=role,
+                    text=(
+                        f"active_input={state.active_source or 'none'}\n"
+                        f"active_online={str(state.active_online).lower()}\n"
+                        f"pending_requests={len(state.pending_requests)}"
+                    ),
+                )
+            if action == "request":
+                request = self.input_gate.request_switch("telegram", actor_ref=actor_ref)
+                return TelegramOutboundMessage(
+                    ok=True,
+                    chat_id=update.chat_id,
+                    role=role,
+                    text=(
+                        "input_switch_status=pending\n"
+                        f"request_id={request.request_id}\n"
+                        f"approval_required_from={request.from_source}"
+                    ),
+                )
+            if action in {"approve", "reject"} and len(parts) == 3:
+                request = self.input_gate.decide(
+                    parts[2],
+                    source="telegram",
+                    actor_ref=actor_ref,
+                    approve=action == "approve",
+                )
+                return TelegramOutboundMessage(
+                    ok=True,
+                    chat_id=update.chat_id,
+                    role=role,
+                    text=(
+                        f"input_switch_status={request.status}\n"
+                        f"request_id={request.request_id}"
+                    ),
+                )
+        except InputGateError as exc:
+            return TelegramOutboundMessage(
+                ok=False,
+                chat_id=update.chat_id,
+                role=role,
+                text=f"input_switch_status=failed\nmessage={exc}",
+            )
+        return TelegramOutboundMessage(
+            ok=False,
+            chat_id=update.chat_id,
+            role=role,
+            text="usage: /input status|request|approve REQUEST_ID|reject REQUEST_ID",
+        )
 
 
 def check_telegram_bot_startup(settings: TelegramBotSettings) -> TelegramBotStartup:

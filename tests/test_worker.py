@@ -148,6 +148,10 @@ class WorkerTests(unittest.TestCase):
             signals = list_signals(connection)
             snapshots = list_strategy_snapshots(connection)
             notifications = list_notifications(connection)
+            signal_notifications = [
+                item for item in notifications
+                if item["payload"].get("type") == "signal_alert"
+            ]
             connection.close()
             lake_file_exists = (root / "data/lake/raw_bars/date=2026-05-22/part-00000.jsonl").exists()
 
@@ -155,7 +159,7 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(len(signals), 1)
         self.assertEqual(signals[0].strategy_id, "ma_cross")
         self.assertEqual(len(snapshots), 1)
-        self.assertEqual(len(notifications), 1)
+        self.assertEqual(len(signal_notifications), 1)
         self.assertTrue(lake_file_exists)
         self.assertIn("approved_signals=1", stream.getvalue())
 
@@ -177,12 +181,16 @@ class WorkerTests(unittest.TestCase):
             second_exit = run_worker(root, once=True, interval_sec=0.01, stream=second_stream, now_fn=lambda: MARKET_OPEN_NOW)
             connection = open_database(root / "data/runtime/stock_agent.sqlite")
             notifications = list_notifications(connection)
+            signal_notifications = [
+                item for item in notifications
+                if item["payload"].get("type") == "signal_alert"
+            ]
             connection.close()
 
         self.assertEqual(first_exit, 0)
         self.assertEqual(second_exit, 0)
-        self.assertEqual(len(notifications), 1)
-        self.assertEqual(notifications[0]["status"], "sent")
+        self.assertEqual(len(signal_notifications), 1)
+        self.assertEqual(signal_notifications[0]["status"], "sent")
         self.assertIn("notifications=0", second_stream.getvalue())
 
 

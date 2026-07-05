@@ -12,21 +12,46 @@ It is designed to:
 - Review candidate signals with supervisor checks.
 - Store signals, traces, health metrics, and notifications in SQLite.
 - Query signals, health status, traces, abnormal bars, and provider status through CLI.
-- Provide integration seams for Telegram, LLM-based intent parsing, and live data providers.
+- Accept controlled natural-language input from CLI, Telegram, or FastAPI.
+- Route Chinese or English requests to typed tools through an optional model API.
 
-Currently runnable end-to-end flow:
-
-```text
-demo CSV -> bar builder -> strategy -> supervisor -> SQLite -> CLI query / CLI alert
-```
-
-External flows that still require production wiring:
+Currently runnable market-data flow:
 
 ```text
-worker -> Telegram push alert
-LLM client -> LlmParser
-production live provider operations
+Twelve Data 1m bars -> 30m bar builder -> strategy -> supervisor -> SQLite
+        | provider failure
+        v
+demo CSV fallback -> strategy -> supervisor -> SQLite
 ```
+
+Currently runnable interaction flow:
+
+```text
+CLI / Telegram / FastAPI
+        -> persistent single-input gate
+        -> ReAct tool-routing Agent or deterministic parser
+        -> typed query tool
+        -> SQLite / Data Lake result
+```
+
+### 1.1 Features Added Since The Previous Version
+
+- Added the Twelve Data REST provider, request retry and credit-budget checks,
+  1-minute source bars, 30-minute aggregation, and CSV fallback.
+- Added a persistent global input owner shared by CLI, Telegram, and FastAPI.
+  Only the active interface can submit commands; switching requires approval
+  from the original interface and expires after 10 minutes by default.
+- Added Telegram Bot API long polling, interface heartbeats, input-switch
+  request/approval commands, and proactive approval notifications.
+- Added a FastAPI workbench with query APIs, Agent plan/confirm APIs, input
+  control, an approval page, and an SSE status stream.
+- Added a bilingual ReAct routing Agent with typed tools. It asks for missing
+  parameters, returns `no_suitable_tool` when no script matches, and never
+  invents an unregistered script.
+- Added OpenRouter-hosted Qwen configuration with `openrouter/free` fallback
+  for temporary rate-limit or provider errors.
+- Added regression coverage for Agent routing, all three input interfaces,
+  FastAPI, Telegram transport, live-data configuration, and worker fallback.
 
 ## 2. Installation Requirements
 
@@ -71,31 +96,36 @@ provider:
     path: data/sample/sample_bars.csv
 ```
 
-### 3.2 Alpha Vantage Live Market Data Interface
+### 3.2 Twelve Data Live Market Data Interface
 
-Purpose: Switch the market data source from demo CSV to a live provider.
+Purpose: Fetch 1-minute live bars, aggregate them into the configured 30-minute
+bars, and fall back to demo CSV when the provider is unavailable.
 
 ```yaml
 provider:
-  default: live
+  default: twelve_data
   priority:
-    - live
-    - csv_demo
+    - twelve_data
   fallback:
     enabled: true
     order:
       - csv_demo
   csv_demo:
     path: data/sample/sample_bars.csv
-  live:
-    name: alpha_vantage
-    api_key_env: MARKET_DATA_API_KEY
+  twelve_data:
+    api_key_env: TWELVE_DATA_API_KEY
+    base_url: https://api.twelvedata.com
+    source_interval: 1min
+    poll_interval_sec: 60
+    request_timeout_sec: 15
+    max_retries: 3
+    credit_budget_per_minute: 8
 ```
 
 PowerShell environment variable:
 
 ```powershell
-$env:MARKET_DATA_API_KEY = "your-alpha-vantage-key"
+$env:TWELVE_DATA_API_KEY = "your-twelve-data-key"
 ```
 
 Watch symbols:
@@ -110,7 +140,7 @@ symbols:
 
 ### 3.3 Telegram Interface
 
-Purpose: Enable the Telegram query/interaction entrypoint. The current command runner is a skeleton; the core bot adapter is implemented and tested.
+Purpose: Enable the Telegram query/interaction entrypoint through Bot API long polling.
 
 ```yaml
 telegram:
@@ -118,6 +148,8 @@ telegram:
   token_env: TELEGRAM_BOT_TOKEN
   allowed_user_ids:
     - 123456789
+  admin_user_ids: []
+  allowed_chat_ids: []
 ```
 
 PowerShell environment variable:
@@ -135,6 +167,10 @@ Current Telegram bot core supports:
 - `/provider-compare`
 - `/abnormal-bars`
 - `/trace SIGNAL_ID`
+- `/input status`
+- `/input request`
+- `/input approve REQUEST_ID`
+- `/input reject REQUEST_ID`
 - Pending config changes
 - High-risk trading/account/credential intent blocking
 
@@ -146,20 +182,25 @@ TelegramNotificationSink -> NotificationOutbox.dispatch_pending(...)
 
 ### 3.4 LLM Interface
 
-Purpose: Use an LLM only for natural-language-to-intent parsing, not for direct trading decisions.
+Purpose: Use the OpenRouter-hosted Qwen model for Agent tool routing, not for
+direct trading decisions.
 
 ```yaml
 llm:
   enabled: true
-  provider: openai
-  model: gpt-4.1-mini
-  api_key_env: OPENAI_API_KEY
+  provider: openrouter
+  model: qwen/qwen3-next-80b-a3b-instruct:free
+  fallback_model: openrouter/free
+  api_key_env: OPENROUTER_API_KEY
+  base_url: https://openrouter.ai/api/v1
+  request_timeout_sec: 45
+  max_retries: 0
 ```
 
 PowerShell environment variable:
 
 ```powershell
-$env:OPENAI_API_KEY = "your-openai-key"
+$env:OPENROUTER_API_KEY = "your-openrouter-key"
 ```
 
 Integration shape:
@@ -174,6 +215,75 @@ bot = TelegramBot(
     llm_parser=parser,
 )
 ```
+
+The model is used only to select a registered tool and extract its arguments.
+Indicator calculation, signal generation, supervisor checks, and trading
+actions remain outside the model.
+
+Registered Agent tools:
+
+- `query_signals`, `query_bars`, `query_health`, and `query_trace`
+- `query_news`, `query_statistics`, and `query_schedule`
+- `query_provider_compare`, `query_abnormal_bars`, and `query_config_changes`
+- `ask_user` for missing parameters
+- `no_suitable_tool` for unsupported requests
+
+### 3.5 FastAPI Workbench
+
+Purpose: Expose read-only queries, controlled Agent input, input ownership, and
+live status updates to a local web client.
+
+Start the current web command implementation:
+
+```powershell
+uv run python -c "from pathlib import Path; from stock_agent.commands.web import run_web; raise SystemExit(run_web(Path.cwd()))"
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000
+http://127.0.0.1:8000/api/docs
+```
+
+The home page displays the active input interface and pending switch requests.
+Submit an Agent request through the API:
+
+```powershell
+$body = @{ message = "查询 QQQ 今天的 MACD 信号" } | ConvertTo-Json
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://127.0.0.1:8000/api/v1/agent/plan" `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+Main endpoints:
+
+- `GET /api/v1/bars`
+- `GET /api/v1/signals`
+- `GET /api/v1/signals/{signal_id}/trace`
+- `GET /api/v1/health`
+- `GET /api/v1/config-changes`
+- `POST /api/v1/agent/plan`
+- `POST /api/v1/agent/runs/{run_id}/confirm`
+- `GET /api/v1/input`
+- `POST /api/v1/input/switch/requests`
+- `GET /api/v1/events` (SSE)
+
+### 3.6 Global Input Control
+
+CLI, Telegram, and FastAPI are all output/query interfaces, but only one of
+them may submit commands at a time.
+
+- The active interface and pending switch requests are persisted in SQLite.
+- A blocked interface receives the current active-interface message.
+- The new interface submits a switch request.
+- The original active interface must approve or reject the request.
+- Requests expire after 600 seconds by default.
+- The original interface must be online for a switch request to be created.
+
+See `docs/input_control.md` for the command and API details.
 
 ## 4. Usage Steps And Expected Outputs
 
@@ -387,7 +497,7 @@ Expected output shape after enabling token:
 
 ```text
 telegram_status=ready
-listener=skeleton
+listener=long_polling
 workspace=<project-root>
 ```
 
@@ -442,7 +552,7 @@ uv run --extra dev pytest
 Latest full verification result:
 
 ```text
-269 passed, 1 xfailed
+305 passed, 1 xfailed, 84 subtests passed
 ```
 
 ## 6. Common Commands
@@ -457,6 +567,7 @@ uv run stock-agent cli trace sig-qqq-ma2-ma3-20260522T153000Z
 uv run stock-agent health --verbose
 uv run stock-agent telegram
 uv run stock-agent retention
+uv run python -c "from pathlib import Path; from stock_agent.commands.web import run_web; raise SystemExit(run_web(Path.cwd()))"
 ```
 
 ## 7. Safety Boundary

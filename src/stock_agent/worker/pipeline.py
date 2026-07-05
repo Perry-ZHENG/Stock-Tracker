@@ -111,9 +111,18 @@ class WorkerPipeline:
         quarantine_result = quarantine_abnormal_bars(raw_bars)
         persist_quarantine_result(self.connection, quarantine_result)
         raw_bars = quarantine_result.clean_bars
-        prepared_bars = BarBuilder(
+        bar_builder = BarBuilder(
             regular_session_only=self.config.bar.session == "regular_only"
-        ).from_standard_bars(raw_bars)
+        )
+        if raw_bars and all(bar.interval == self.config.provider.twelve_data.source_interval.replace("min", "m") for bar in raw_bars):
+            aggregated_bars = bar_builder.from_source_bars(
+                raw_bars,
+                target_interval=self.config.bar.interval,
+                source_interval=self.config.provider.twelve_data.source_interval.replace("min", "m"),
+            )
+            prepared_bars = [bar for bar in aggregated_bars if bar.quality_flag == "normal"]
+        else:
+            prepared_bars = bar_builder.from_standard_bars(raw_bars)
 
         lake_writes = 0
         if raw_bars:

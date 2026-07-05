@@ -7,6 +7,7 @@ import hashlib
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event, Thread
 from typing import TextIO
 
 from stock_agent.config_changes import create_config_change
@@ -19,6 +20,7 @@ from stock_agent.dialog.intents import (
     ReadOnlyIntent,
 )
 from stock_agent.dialog.interaction import ChatClient, build_interaction_plan, format_interaction_plan
+from stock_agent.dialog.input_gate import InputGate, InputGateError
 from stock_agent.dialog.langchain_adapter import build_langchain_client
 from stock_agent.dialog.llm_parser import LlmParser
 from stock_agent.query import QueryService
@@ -43,62 +45,179 @@ def run_interactive_cli(
     chat_client = chat_client or langchain_client
     output.write("stock-agent interactive cli\n")
     output.write("type 'exit' or 'quit' to leave\n")
+    gate_connection = initialize_runtime_database(root, config_context.config)
+    gate = InputGate.from_config(gate_connection, config_context.config.input_control)
+    actor_ref = "local_cli"
+    shown_switch_requests: set[str] = set()
+    heartbeat_stop = Event()
+    heartbeat_thread = Thread(
+        target=_run_cli_heartbeat,
+        args=(root, config_context, actor_ref, heartbeat_stop),
+        name="stock-agent-cli-input-heartbeat",
+        daemon=True,
+    )
 
-    while True:
-        output.write("stock-agent> ")
+    try:
+        startup_decision = gate.check("cli", actor_ref=actor_ref)
+        output.write(
+            f"input_status={'active' if startup_decision.allowed else 'standby'}\n"
+            f"message={startup_decision.message}\n"
+        )
         output.flush()
-        line = input_stream.readline()
-        if line == "":
-            output.write("\n")
-            output.flush()
-            return 0
-        text = line.strip()
-        if text.lower() in {"exit", "quit"}:
-            output.write("bye\n")
-            output.flush()
-            return 0
-        if not text:
-            continue
+        heartbeat_thread.start()
+        while True:
+            for request in gate.pending_for("cli"):
+                if request.request_id not in shown_switch_requests:
+                    output.write(
+                        "input_switch_approval_required=true\n"
+                        f"request_id={request.request_id}\n"
+                        f"from={request.from_source}\n"
+                        f"to={request.to_source}\n"
+                        f"expires_at={request.as_dict()['expires_at']}\n"
+                        f"approve with: approve {request.request_id}\n"
+                        f"reject with: reject {request.request_id}\n"
+                    )
+                    shown_switch_requests.add(request.request_id)
 
-        plan = build_interaction_plan(text, llm_parser=llm_parser, chat_client=chat_client)
-        if plan.is_chat:
-            output.write(format_interaction_plan(plan))
+            output.write("stock-agent> ")
             output.flush()
-            continue
-        if plan.requires_confirmation:
-            output.write(format_interaction_plan(plan))
-            output.write("execute? type yes to continue: ")
-            output.flush()
-            confirmation = input_stream.readline().strip().lower()
-            if confirmation != "yes":
-                output.write("\nexecution_status=cancelled\n")
+            line = input_stream.readline()
+            if line == "":
+                output.write("\n")
+                output.flush()
+                return 0
+            text = line.strip()
+            if text.lower() in {"exit", "quit"}:
+                output.write("bye\n")
+                output.flush()
+                return 0
+            if not text:
+                gate.heartbeat("cli", actor_ref=actor_ref)
+                continue
+
+            if _handle_input_control_command(
+                gate,
+                text,
+                actor_ref=actor_ref,
+                output=output,
+            ):
                 output.flush()
                 continue
-            output.write("\n")
 
-        intent = plan.intent
-        if isinstance(intent, ReadOnlyIntent):
-            output.write(_execute_read_only(root, intent, config_context=config_context))
-        elif isinstance(intent, PendingChangeIntent):
-            output.write(
-                _handle_pending_change(
-                    root,
-                    intent,
-                    input_stream=input_stream,
-                    config_context=config_context,
-                    already_confirmed=plan.requires_confirmation,
+            decision = gate.check("cli", actor_ref=actor_ref)
+            if not decision.allowed:
+                output.write(f"input_status=blocked\nmessage={decision.message}\n")
+                output.write("type yes to request input switch: ")
+                output.flush()
+                confirmation = input_stream.readline().strip().lower()
+                if confirmation == "yes":
+                    try:
+                        request = gate.request_switch("cli", actor_ref=actor_ref)
+                    except InputGateError as exc:
+                        output.write(f"\ninput_switch_status=failed\nmessage={exc}\n")
+                    else:
+                        output.write(
+                            "\ninput_switch_status=pending\n"
+                            f"request_id={request.request_id}\n"
+                            f"approval_required_from={request.from_source}\n"
+                        )
+                else:
+                    output.write("\ninput_switch_status=cancelled\n")
+                output.flush()
+                continue
+
+            plan = build_interaction_plan(text, llm_parser=llm_parser, chat_client=chat_client)
+            if plan.is_chat:
+                output.write(format_interaction_plan(plan))
+                output.flush()
+                continue
+            if plan.requires_confirmation:
+                output.write(format_interaction_plan(plan))
+                output.write("execute? type yes to continue: ")
+                output.flush()
+                confirmation = input_stream.readline().strip().lower()
+                if confirmation != "yes":
+                    output.write("\nexecution_status=cancelled\n")
+                    output.flush()
+                    continue
+                output.write("\n")
+
+            intent = plan.intent
+            if isinstance(intent, ReadOnlyIntent):
+                output.write(_execute_read_only(root, intent, config_context=config_context))
+            elif isinstance(intent, PendingChangeIntent):
+                output.write(
+                    _handle_pending_change(
+                        root,
+                        intent,
+                        input_stream=input_stream,
+                        config_context=config_context,
+                        already_confirmed=plan.requires_confirmation,
+                    )
                 )
-            )
-        elif isinstance(intent, HighRiskBlockedIntent):
-            output.write(_handle_blocked_intent(root, intent, config_context=config_context))
-        elif isinstance(intent, ClarificationIntent):
-            output.write(f"clarification_required=true\nquestion={intent.question}\n")
-            output.write("examples:\n")
-            for example in intent.candidates:
-                output.write(f"- {example}\n")
-        elif isinstance(intent, LocalAdminIntent):
-            output.write(f"local_admin_intent={intent.action} is not wired in interactive mode yet\n")
-        output.flush()
+            elif isinstance(intent, HighRiskBlockedIntent):
+                output.write(_handle_blocked_intent(root, intent, config_context=config_context))
+            elif isinstance(intent, ClarificationIntent):
+                output.write(f"clarification_required=true\nquestion={intent.question}\n")
+                output.write("examples:\n")
+                for example in intent.candidates:
+                    output.write(f"- {example}\n")
+            elif isinstance(intent, LocalAdminIntent):
+                output.write(f"local_admin_intent={intent.action} is not wired in interactive mode yet\n")
+            output.flush()
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=1)
+        gate.mark_offline("cli", actor_ref=actor_ref)
+        gate_connection.close()
+
+
+def _handle_input_control_command(
+    gate: InputGate,
+    text: str,
+    *,
+    actor_ref: str,
+    output: TextIO,
+) -> bool:
+    parts = text.split()
+    if not parts or parts[0].lower() not in {"approve", "reject"}:
+        return False
+    if len(parts) != 2:
+        output.write("input_switch_status=failed\nmessage=usage: approve|reject REQUEST_ID\n")
+        return True
+    try:
+        request = gate.decide(
+            parts[1],
+            source="cli",
+            actor_ref=actor_ref,
+            approve=parts[0].lower() == "approve",
+        )
+    except InputGateError as exc:
+        output.write(f"input_switch_status=failed\nmessage={exc}\n")
+    else:
+        output.write(
+            f"input_switch_status={request.status}\n"
+            f"request_id={request.request_id}\n"
+            f"active_input={request.to_source if request.status == 'approved' else request.from_source}\n"
+        )
+    return True
+
+
+def _run_cli_heartbeat(
+    root: Path,
+    config_context: RuntimeConfigContext,
+    actor_ref: str,
+    stop: Event,
+) -> None:
+    while not stop.wait(15):
+        connection = initialize_runtime_database(root, config_context.config)
+        try:
+            InputGate.from_config(
+                connection,
+                config_context.config.input_control,
+            ).heartbeat("cli", actor_ref=actor_ref)
+        finally:
+            connection.close()
 
 
 def _execute_read_only(root: Path, intent: ReadOnlyIntent, *, config_context: RuntimeConfigContext) -> str:

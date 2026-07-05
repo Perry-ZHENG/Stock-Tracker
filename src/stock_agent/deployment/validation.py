@@ -58,7 +58,14 @@ def validate_deployment(
     checks.append(_parent_check("duckdb_parent", duckdb_path, "DuckDB analytics directory"))
 
     csv_path = root / config.provider.csv_demo.path
-    if config.provider.default == "csv_demo" or "csv_demo" in config.provider.priority:
+    if (
+        config.provider.default == "csv_demo"
+        or "csv_demo" in config.provider.priority
+        or (
+            config.provider.fallback.enabled
+            and "csv_demo" in config.provider.fallback.order
+        )
+    ):
         checks.append(_path_check("csv_demo", csv_path, must_exist=True, message="demo CSV data source"))
 
     return DeployValidationResult(root=root, config_path=config_context.config_path, checks=checks)

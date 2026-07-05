@@ -18,6 +18,11 @@ from stock_agent.providers.registry import (
     ProviderRegistry,
     ProviderRegistryError,
 )
+from stock_agent.providers.twelve_data import (
+    TwelveDataProvider,
+    TwelveDataProviderError,
+    create_twelve_data_provider,
+)
 
 __all__ = [
     "AlphaVantageProvider",
@@ -31,6 +36,9 @@ __all__ = [
     "ProviderFetchResult",
     "ProviderRegistry",
     "ProviderRegistryError",
+    "TwelveDataProvider",
+    "TwelveDataProviderError",
     "create_broker_market_data_provider",
     "create_live_provider",
+    "create_twelve_data_provider",
 ]

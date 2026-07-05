@@ -3,6 +3,8 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from stock_agent.commands.interactive_cli import run_interactive_cli
 from stock_agent.dialog.interaction import build_interaction_plan
@@ -169,6 +171,68 @@ class NaturalLanguageInteractionTests(unittest.TestCase):
         config = validate_config(DEFAULT_CONFIG).llm.model_copy(update={"enabled": True})
 
         self.assertIsNone(build_langchain_client(config, environ={}))
+
+    def test_langchain_adapter_uses_openrouter_base_url(self) -> None:
+        config = validate_config(DEFAULT_CONFIG).llm
+        fake_model = SimpleNamespace(
+            invoke=lambda _prompt: SimpleNamespace(content="model response")
+        )
+
+        with patch("langchain_openai.ChatOpenAI", return_value=fake_model) as chat:
+            client = build_langchain_client(
+                config,
+                environ={"OPENROUTER_API_KEY": "test-key"},
+            )
+
+        self.assertIsNotNone(client)
+        self.assertEqual(client("hello"), "model response")
+        self.assertEqual(chat.call_count, 2)
+        self.assertEqual(
+            chat.call_args_list[0].kwargs,
+            {
+                "model": "qwen/qwen3-next-80b-a3b-instruct:free",
+                "api_key": "test-key",
+                "temperature": 0,
+                "timeout": 45,
+                "max_retries": 0,
+                "base_url": "https://openrouter.ai/api/v1",
+            },
+        )
+        self.assertEqual(
+            chat.call_args_list[1].kwargs,
+            {
+                "model": "openrouter/free",
+                "api_key": "test-key",
+                "temperature": 0,
+                "timeout": 45,
+                "max_retries": 0,
+                "base_url": "https://openrouter.ai/api/v1",
+            },
+        )
+
+    def test_langchain_adapter_falls_back_after_rate_limit(self) -> None:
+        config = validate_config(DEFAULT_CONFIG).llm
+
+        class RateLimited(Exception):
+            status_code = 429
+
+        primary = SimpleNamespace(
+            invoke=lambda _prompt: (_ for _ in ()).throw(RateLimited("429"))
+        )
+        fallback = SimpleNamespace(
+            invoke=lambda _prompt: SimpleNamespace(content="fallback response")
+        )
+        with patch(
+            "langchain_openai.ChatOpenAI",
+            side_effect=[primary, fallback],
+        ):
+            client = build_langchain_client(
+                config,
+                environ={"OPENROUTER_API_KEY": "test-key"},
+            )
+
+        self.assertIsNotNone(client)
+        self.assertEqual(client("hello"), "fallback response")
 
 
 def _signal() -> Signal:

@@ -18,7 +18,18 @@ class ConfigTests(unittest.TestCase):
         config = validate_config(DEFAULT_CONFIG)
 
         self.assertEqual(config.app.name, "stock-agent")
-        self.assertEqual(config.provider.default, "csv_demo")
+        self.assertEqual(config.provider.default, "twelve_data")
+        self.assertEqual(config.input_control.request_ttl_sec, 600)
+        self.assertEqual(config.llm.provider, "openrouter")
+        self.assertEqual(
+            config.llm.model,
+            "qwen/qwen3-next-80b-a3b-instruct:free",
+        )
+        self.assertEqual(config.llm.fallback_model, "openrouter/free")
+        self.assertEqual(config.llm.api_key_env, "OPENROUTER_API_KEY")
+        self.assertEqual(config.llm.base_url, "https://openrouter.ai/api/v1")
+        self.assertEqual(config.llm.request_timeout_sec, 45)
+        self.assertEqual(config.llm.max_retries, 0)
         self.assertEqual(config.strategies.ma_cross.pairs[0], (3, 5))
 
     def test_default_config_yaml_contains_required_sections(self) -> None:
@@ -85,7 +96,7 @@ class ConfigTests(unittest.TestCase):
             context = load_config(root)
 
         self.assertFalse(context.used_defaults)
-        self.assertEqual(context.config.provider.default, "csv_demo")
+        self.assertEqual(context.config.provider.default, "twelve_data")
         self.assertEqual(context.config.symbols.default, ["AAPL", "MSFT", "NVDA"])
         self.assertEqual(context.config_path.name, "config.yaml")
 
@@ -117,7 +128,7 @@ class ConfigTests(unittest.TestCase):
                 reload_config(current, root=root)
 
         self.assertEqual(current.config.app.name, "stock-agent")
-        self.assertEqual(current.config.provider.default, "csv_demo")
+        self.assertEqual(current.config.provider.default, "twelve_data")
 
 
 if __name__ == "__main__":

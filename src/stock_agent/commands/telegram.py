@@ -5,9 +5,17 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from threading import Event
 from typing import TextIO
 
 from stock_agent.config_loader import RuntimeConfigContext, load_config
+from stock_agent.storage.sqlite import initialize_runtime_database
+from stock_agent.telegram.bot import (
+    TelegramBot,
+    TelegramBotSettings,
+    TelegramUpdate,
+)
+from stock_agent.telegram.transport import TelegramHttpApi, TelegramTransportError
 
 
 def run_telegram(
@@ -15,6 +23,9 @@ def run_telegram(
     *,
     stream: TextIO | None = None,
     config_context: RuntimeConfigContext | None = None,
+    api: TelegramHttpApi | None = None,
+    stop_event: Event | None = None,
+    once: bool = False,
 ) -> int:
     output = stream or sys.stdout
     config_context = config_context or load_config(root)
@@ -33,10 +44,113 @@ def run_telegram(
         return 0
 
     output.write("telegram_status=ready\n")
-    output.write("listener=skeleton\n")
+    output.write("listener=long_polling\n")
     output.write(f"workspace={root}\n")
     output.flush()
+    connection = initialize_runtime_database(root, config)
+    bot = TelegramBot(
+        root=root,
+        connection=connection,
+        settings=TelegramBotSettings(
+            token=token,
+            allowed_user_ids=config.telegram.allowed_user_ids,
+            admin_user_ids=config.telegram.admin_user_ids,
+            allowed_chat_ids=config.telegram.allowed_chat_ids,
+        ),
+        config_context=config_context,
+    )
+    transport = api or TelegramHttpApi(token)
+    stop = stop_event or Event()
+    offset = 0
+    sent_approval_requests: set[str] = set()
+    try:
+        while not stop.is_set():
+            bot.input_gate.heartbeat("telegram", actor_ref="telegram_bot")
+            try:
+                updates = transport.get_updates(offset=offset, timeout_sec=20)
+                for raw_update in updates:
+                    update_id = raw_update.get("update_id")
+                    if isinstance(update_id, int):
+                        offset = max(offset, update_id + 1)
+                    parsed = _parse_update(raw_update)
+                    if parsed is None:
+                        continue
+                    response = bot.handle_update(parsed)
+                    transport.send_message(chat_id=response.chat_id, text=response.text)
+                _send_pending_approvals(
+                    bot,
+                    transport,
+                    sent_request_ids=sent_approval_requests,
+                )
+            except TelegramTransportError as exc:
+                output.write(f"telegram_transport_error={exc}\n")
+                output.flush()
+                if once:
+                    return 1
+                if stop.wait(2):
+                    break
+            if once:
+                break
+    except KeyboardInterrupt:
+        output.write("telegram_status=stopped\nreason=keyboard_interrupt\n")
+        output.flush()
+    finally:
+        bot.input_gate.mark_offline("telegram")
+        connection.close()
     return 0
+
+
+def _parse_update(raw_update: dict) -> TelegramUpdate | None:
+    message = raw_update.get("message")
+    if not isinstance(message, dict):
+        return None
+    sender = message.get("from")
+    chat = message.get("chat")
+    text = message.get("text")
+    if not isinstance(sender, dict) or not isinstance(chat, dict) or not isinstance(text, str):
+        return None
+    user_id = sender.get("id")
+    chat_id = chat.get("id")
+    if not isinstance(user_id, int) or not isinstance(chat_id, int):
+        return None
+    return TelegramUpdate(user_id=user_id, chat_id=chat_id, text=text)
+
+
+def _send_pending_approvals(
+    bot: TelegramBot,
+    transport: TelegramHttpApi,
+    *,
+    sent_request_ids: set[str],
+) -> None:
+    state = bot.input_gate.state()
+    if state.active_source != "telegram" or not state.active_actor_ref:
+        return
+    chat_id = _chat_id_from_actor(state.active_actor_ref)
+    if chat_id is None:
+        return
+    for message in bot.pending_approval_messages(chat_id=chat_id):
+        request_id = _request_id_from_message(message.text)
+        if request_id is None or request_id in sent_request_ids:
+            continue
+        transport.send_message(chat_id=message.chat_id, text=message.text)
+        sent_request_ids.add(request_id)
+
+
+def _chat_id_from_actor(actor_ref: str) -> int | None:
+    parts = actor_ref.split(":")
+    if len(parts) != 4 or parts[0] != "user" or parts[2] != "chat":
+        return None
+    try:
+        return int(parts[3])
+    except ValueError:
+        return None
+
+
+def _request_id_from_message(text: str) -> str | None:
+    for line in text.splitlines():
+        if line.startswith("request_id="):
+            return line.split("=", 1)[1].strip() or None
+    return None
 
 
 __all__ = ["run_telegram"]

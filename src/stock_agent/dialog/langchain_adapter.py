@@ -32,16 +32,49 @@ def build_langchain_client(
     except ImportError:
         return None
 
-    model = ChatOpenAI(model=config.model, api_key=api_key, temperature=0)
+    def create_model(model_name: str):
+        model_kwargs = {
+            "model": model_name,
+            "api_key": api_key,
+            "temperature": 0,
+            "timeout": config.request_timeout_sec,
+            "max_retries": config.max_retries,
+        }
+        if config.base_url:
+            model_kwargs["base_url"] = config.base_url
+        return ChatOpenAI(**model_kwargs)
+
+    model = create_model(config.model)
+    fallback_model = (
+        create_model(config.fallback_model)
+        if config.fallback_model and config.fallback_model != config.model
+        else None
+    )
 
     def client(prompt: str) -> str:
-        response = model.invoke(prompt)
+        try:
+            response = model.invoke(prompt)
+        except Exception as exc:
+            if fallback_model is None or not _is_retryable_provider_error(exc):
+                raise
+            response = fallback_model.invoke(prompt)
         content = getattr(response, "content", response)
         if isinstance(content, list):
             return "\n".join(str(item.get("text", item)) if isinstance(item, dict) else str(item) for item in content)
         return str(content)
 
     return client
+
+
+def _is_retryable_provider_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code in {429, 502, 503, 504}:
+        return True
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in ("429", "rate limit", "temporarily unavailable", "provider returned error")
+    )
 
 
 __all__ = ["LangChainClient", "build_langchain_client"]

@@ -18,6 +18,10 @@ from stock_agent.providers.base import MarketDataProvider
 from stock_agent.providers.broker_market_data import BrokerMarketDataProviderError, create_broker_market_data_provider
 from stock_agent.providers.csv_demo import CsvDemoProvider, CsvDemoProviderError
 from stock_agent.providers.live import LiveProviderError, create_live_provider
+from stock_agent.providers.twelve_data import (
+    TwelveDataProviderError,
+    create_twelve_data_provider,
+)
 from stock_agent.schemas import Bar
 from stock_agent.security import redact_sensitive, redact_text
 from stock_agent.storage.repositories import insert_notification, insert_trace_chain
@@ -84,9 +88,14 @@ class ProviderRegistry:
             started = time.perf_counter()
             try:
                 provider = self._create_provider(provider_name)
+                provider_interval = (
+                    self.config.provider.twelve_data.source_interval
+                    if provider_name.lower() in {"twelve_data", "twelvedata"}
+                    else interval
+                )
                 bars = provider.fetch_intraday_bars(
                     symbols=symbols,
-                    interval=interval,
+                    interval=provider_interval,
                     start=start,
                     end=end,
                 )
@@ -146,6 +155,15 @@ class ProviderRegistry:
             return self.provider_factories[normalized]()
         if normalized == "csv_demo":
             return CsvDemoProvider(self.root / self.config.provider.csv_demo.path)
+        if normalized in {"twelve_data", "twelvedata"}:
+            twelve_data = self.config.provider.twelve_data
+            return create_twelve_data_provider(
+                api_key_env=twelve_data.api_key_env,
+                base_url=twelve_data.base_url,
+                request_timeout_sec=twelve_data.request_timeout_sec,
+                max_retries=twelve_data.max_retries,
+                credit_budget_per_minute=twelve_data.credit_budget_per_minute,
+            )
         if normalized in {"live", self.config.provider.live.name.lower(), "alpha_vantage"}:
             return create_live_provider(
                 provider_name=self.config.provider.live.name,
@@ -219,6 +237,10 @@ def _classify_provider_error(exc: Exception) -> ProviderErrorType:
         return "configuration"
     if isinstance(exc, LiveProviderError) and any(
         token in message for token in ("missing api key", "unsupported", "required")
+    ):
+        return "configuration"
+    if isinstance(exc, TwelveDataProviderError) and any(
+        token in message for token in ("missing api key", "unsupported", "required", "credit budget")
     ):
         return "configuration"
     if any(token in message for token in ("rate", "throttle", "quota", "limit")):

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ app_name }} 输入控制</title>
+  <style>
+    body { max-width: 760px; margin: 40px auto; padding: 0 20px; font: 16px/1.5 system-ui, sans-serif; color: #172033; }
+    .panel { border: 1px solid #d8deea; border-radius: 12px; padding: 20px; margin: 16px 0; }
+    .status { display: grid; grid-template-columns: 150px 1fr; gap: 8px; }
+    button { margin: 6px 8px 6px 0; padding: 8px 14px; border: 0; border-radius: 7px; cursor: pointer; }
+    .primary { background: #2457d6; color: white; }
+    .danger { background: #b42318; color: white; }
+    .muted { color: #667085; }
+    .request { border-top: 1px solid #eaecf0; padding-top: 12px; margin-top: 12px; }
+    #message { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>{{ app_name }} 输入控制</h1>
+  <p class="muted">系统同一时间只允许 CLI、Telegram 或 FastAPI 中的一个入口提交命令。</p>
+
+  <section class="panel">
+    <div class="status">
+      <span>当前输入接口</span><strong id="active-source">载入中</strong>
+      <span>接口在线</span><span id="active-online">载入中</span>
+    </div>
+    <button id="request-switch" class="primary" hidden>申请切换至 FastAPI</button>
+    <p id="message" class="muted"></p>
+  </section>
+
+  <section class="panel">
+    <h2>待审批切换</h2>
+    <div id="pending"><span class="muted">暂无请求</span></div>
+  </section>
+
+  <script>
+    const activeSource = document.querySelector("#active-source");
+    const activeOnline = document.querySelector("#active-online");
+    const pending = document.querySelector("#pending");
+    const message = document.querySelector("#message");
+    const requestButton = document.querySelector("#request-switch");
+
+    async function post(url) {
+      const response = await fetch(url, {method: "POST"});
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || "请求失败");
+      return body;
+    }
+
+    function render(state) {
+      const active = state.active_source || "尚未选择";
+      activeSource.textContent = active;
+      activeOnline.textContent = state.active_online ? "在线" : "离线";
+      requestButton.hidden = !state.active_source || state.active_source === "fastapi";
+      const rows = state.pending_requests || [];
+      pending.replaceChildren();
+      if (!rows.length) {
+        pending.innerHTML = '<span class="muted">暂无请求</span>';
+        return;
+      }
+      for (const item of rows) {
+        const row = document.createElement("div");
+        row.className = "request";
+        row.innerHTML = `<strong>${item.to_source}</strong> 申请接管输入<br>
+          <span class="muted">${item.request_id} · ${item.expires_at}</span><br>`;
+        if (state.active_source === "fastapi" && item.from_source === "fastapi") {
+          const approve = document.createElement("button");
+          approve.className = "primary";
+          approve.textContent = "批准";
+          approve.onclick = () => decide(item.request_id, "approve");
+          const reject = document.createElement("button");
+          reject.className = "danger";
+          reject.textContent = "拒绝";
+          reject.onclick = () => decide(item.request_id, "reject");
+          row.append(approve, reject);
+        }
+        pending.append(row);
+      }
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch("/api/v1/input");
+        render(await response.json());
+      } catch (error) {
+        message.textContent = error.message;
+      }
+    }
+
+    async function decide(requestId, action) {
+      try {
+        await post(`/api/v1/input/switch/requests/${requestId}/${action}`);
+        message.textContent = `切换请求已${action === "approve" ? "批准" : "拒绝"}`;
+        await refresh();
+      } catch (error) {
+        message.textContent = error.message;
+      }
+    }
+
+    requestButton.onclick = async () => {
+      try {
+        const result = await post("/api/v1/input/switch/requests");
+        message.textContent = `申请已提交：${result.request_id}`;
+        await refresh();
+      } catch (error) {
+        message.textContent = error.message;
+      }
+    };
+
+    setInterval(() => post("/api/v1/input/heartbeat").catch(() => {}), 15000);
+    const events = new EventSource("/api/v1/events");
+    events.addEventListener("snapshot", event => render(JSON.parse(event.data).input_control));
+    refresh();
+  </script>
+</body>
+</html>

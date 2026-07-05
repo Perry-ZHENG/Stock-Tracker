@@ -22,6 +22,8 @@ from stock_agent.commands.trace import run_trace_query
 from stock_agent.commands.worker import run_worker
 from stock_agent.config import init_config
 from stock_agent.config_loader import load_config
+from stock_agent.dialog.input_gate import InputGate
+from stock_agent.storage.sqlite import initialize_runtime_database
 
 COMMANDS: dict[str, str] = {
     "init-config": "Generate default configs/config.yaml and .env.example.",
@@ -125,39 +127,51 @@ def _handle_cli_query(args: argparse.Namespace) -> int:
     config_context = load_config(root)
     if args.action is None:
         return run_interactive_cli(root, config_context=config_context)
-    if args.action == "bars":
-        result = run_bars_query(
+    connection = initialize_runtime_database(root, config_context.config)
+    gate = InputGate.from_config(connection, config_context.config.input_control)
+    actor_ref = "cli:one-shot"
+    decision = gate.check("cli", actor_ref=actor_ref)
+    if not decision.allowed:
+        print(f"input_status=blocked\nmessage={decision.message}")
+        connection.close()
+        return 3
+    try:
+        if args.action == "bars":
+            result = run_bars_query(
+                root,
+                symbol=args.symbol,
+                from_value=args.from_ts,
+                to_value=args.to_ts,
+                config_context=config_context,
+            )
+            return 0 if result.ok else 1
+        if args.action == "trace":
+            result = run_trace_query(
+                root,
+                args.change_id,
+                config_context=config_context,
+            )
+            return 0 if result.ok else 1
+        if args.action in {"review", "approve", "reject"}:
+            return run_config_review(
+                root,
+                action=args.action,
+                change_id=args.change_id,
+                limit=args.limit,
+                config_path=_runtime_config_path(root),
+                config_context=config_context,
+            )
+        return run_cli_query(
             root,
-            symbol=args.symbol,
-            from_value=args.from_ts,
-            to_value=args.to_ts,
-            config_context=config_context,
-        )
-        return 0 if result.ok else 1
-    if args.action == "trace":
-        result = run_trace_query(
-            root,
-            args.change_id,
-            config_context=config_context,
-        )
-        return 0 if result.ok else 1
-    if args.action in {"review", "approve", "reject"}:
-        return run_config_review(
-            root,
-            action=args.action,
-            change_id=args.change_id,
+            query=args.action,
             limit=args.limit,
-            config_path=_runtime_config_path(root),
+            symbol=args.symbol,
+            period=args.period,
             config_context=config_context,
         )
-    return run_cli_query(
-        root,
-        query=args.action,
-        limit=args.limit,
-        symbol=args.symbol,
-        period=args.period,
-        config_context=config_context,
-    )
+    finally:
+        gate.mark_offline("cli", actor_ref=actor_ref)
+        connection.close()
 
 
 def _handle_replay(args: argparse.Namespace) -> int:

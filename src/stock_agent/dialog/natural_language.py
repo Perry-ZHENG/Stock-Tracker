@@ -59,6 +59,7 @@ _SECRET_MARKERS = (
     "api_key",
     "apikey",
     "openai_api_key",
+    "openrouter_api_key",
     "telegram_bot_token",
     "market_data_api_key",
     "news_api_key",

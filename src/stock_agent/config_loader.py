@@ -75,12 +75,19 @@ def _resolve_config_path(root: Path, config_path: Path | None) -> Path:
 
 
 def _load_yaml_mapping(text: str) -> dict[str, Any]:
-    try:
-        import yaml  # type: ignore[import-not-found]
-    except ModuleNotFoundError:
-        value = _parse_project_yaml(text)
-    else:
-        value = yaml.safe_load(text)
+    import yaml
+
+    class ProjectSafeLoader(yaml.SafeLoader):
+        pass
+
+    def construct_project_int(loader, node):
+        scalar = loader.construct_scalar(node)
+        if ":" in scalar:
+            return scalar
+        return yaml.constructor.SafeConstructor.construct_yaml_int(loader, node)
+
+    ProjectSafeLoader.add_constructor("tag:yaml.org,2002:int", construct_project_int)
+    value = yaml.load(text, Loader=ProjectSafeLoader)
 
     if not isinstance(value, dict):
         raise ValueError("config YAML root must be a mapping")

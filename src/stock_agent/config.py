@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -16,8 +17,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "timezone": "America/New_York",
     },
     "provider": {
-        "default": "csv_demo",
-        "priority": ["csv_demo"],
+        "default": "twelve_data",
+        "priority": ["twelve_data"],
         "fallback": {
             "enabled": True,
             "order": ["csv_demo"],
@@ -28,6 +29,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "live": {
             "name": "placeholder",
             "api_key_env": "MARKET_DATA_API_KEY",
+        },
+        "twelve_data": {
+            "api_key_env": "TWELVE_DATA_API_KEY",
+            "base_url": "https://api.twelvedata.com",
+            "source_interval": "1min",
+            "poll_interval_sec": 60,
+            "request_timeout_sec": 15,
+            "max_retries": 3,
+            "credit_budget_per_minute": 8,
         },
     },
     "symbols": {
@@ -80,6 +90,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "enabled": False,
         "token_env": "TELEGRAM_BOT_TOKEN",
         "allowed_user_ids": [],
+        "admin_user_ids": [],
+        "allowed_chat_ids": [],
+    },
+    "input_control": {
+        "request_ttl_sec": 600,
+        "cli_online_timeout_sec": 45,
+        "fastapi_online_timeout_sec": 45,
+        "telegram_online_timeout_sec": 120,
     },
     "news": {
         "enabled": True,
@@ -89,10 +107,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "cache_ttl_minutes": 30,
     },
     "llm": {
-        "enabled": False,
-        "provider": "openai",
-        "model": "gpt-4.1-mini",
-        "api_key_env": "OPENAI_API_KEY",
+        "enabled": True,
+        "provider": "openrouter",
+        "model": "qwen/qwen3-next-80b-a3b-instruct:free",
+        "fallback_model": "openrouter/free",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "base_url": "https://openrouter.ai/api/v1",
+        "request_timeout_sec": 45,
+        "max_retries": 0,
     },
     "storage": {
         "sqlite_path": "data/runtime/stock_agent.sqlite",
@@ -109,10 +131,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
 }
 
-DEFAULT_ENV_EXAMPLE = """MARKET_DATA_API_KEY=
+DEFAULT_ENV_EXAMPLE = """TWELVE_DATA_API_KEY=
+MARKET_DATA_API_KEY=
 TELEGRAM_BOT_TOKEN=
 NEWS_API_KEY=
 OPENAI_API_KEY=
+OPENROUTER_API_KEY=
 """
 
 
@@ -131,6 +155,16 @@ class LiveProviderConfig(BaseModel):
     api_key_env: str
 
 
+class TwelveDataProviderConfig(BaseModel):
+    api_key_env: str = "TWELVE_DATA_API_KEY"
+    base_url: str = "https://api.twelvedata.com"
+    source_interval: str = "1min"
+    poll_interval_sec: int = Field(default=60, ge=15)
+    request_timeout_sec: int = Field(default=15, gt=0, le=120)
+    max_retries: int = Field(default=3, ge=0, le=10)
+    credit_budget_per_minute: int = Field(default=8, gt=0)
+
+
 class ProviderFallbackConfig(BaseModel):
     enabled: bool = True
     order: list[str] = Field(default_factory=lambda: ["csv_demo"])
@@ -142,6 +176,11 @@ class ProviderConfig(BaseModel):
     fallback: ProviderFallbackConfig = Field(default_factory=ProviderFallbackConfig)
     csv_demo: CsvDemoProviderConfig
     live: LiveProviderConfig
+    twelve_data: TwelveDataProviderConfig = Field(
+        default_factory=lambda: TwelveDataProviderConfig.model_validate(
+            DEFAULT_CONFIG["provider"]["twelve_data"]
+        )
+    )
 
 
 class SymbolsConfig(BaseModel):
@@ -210,6 +249,15 @@ class TelegramConfig(BaseModel):
     enabled: bool
     token_env: str
     allowed_user_ids: list[int]
+    admin_user_ids: list[int] = Field(default_factory=list)
+    allowed_chat_ids: list[int] = Field(default_factory=list)
+
+
+class InputControlConfig(BaseModel):
+    request_ttl_sec: int = Field(default=600, ge=60)
+    cli_online_timeout_sec: int = Field(default=45, ge=15)
+    fastapi_online_timeout_sec: int = Field(default=45, ge=15)
+    telegram_online_timeout_sec: int = Field(default=120, ge=15)
 
 
 class NewsConfig(BaseModel):
@@ -224,7 +272,11 @@ class LlmConfig(BaseModel):
     enabled: bool
     provider: str
     model: str
+    fallback_model: str | None = None
     api_key_env: str
+    base_url: str | None = None
+    request_timeout_sec: int = Field(default=45, gt=0, le=180)
+    max_retries: int = Field(default=0, ge=0, le=5)
 
 
 class StorageConfig(BaseModel):
@@ -250,6 +302,11 @@ class StockAgentConfig(BaseModel):
     schedule: ScheduleConfig = Field(default_factory=lambda: ScheduleConfig.model_validate(DEFAULT_CONFIG["schedule"]))
     strategies: StrategiesConfig
     telegram: TelegramConfig
+    input_control: InputControlConfig = Field(
+        default_factory=lambda: InputControlConfig.model_validate(
+            DEFAULT_CONFIG["input_control"]
+        )
+    )
     news: NewsConfig
     llm: LlmConfig
     storage: StorageConfig
@@ -356,5 +413,5 @@ def _yaml_scalar(value: Any) -> str:
     if value is None:
         return "null"
     if isinstance(value, str):
-        return value
+        return json.dumps(value, ensure_ascii=False)
     return str(value)

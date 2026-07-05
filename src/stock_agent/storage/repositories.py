@@ -570,6 +570,67 @@ def list_security_audit(connection: sqlite3.Connection, limit: int = 50) -> list
     return audit_rows
 
 
+def insert_agent_run(
+    connection: sqlite3.Connection,
+    *,
+    run_id: str,
+    source: str,
+    raw_text: str,
+    parser_name: str,
+    intent: dict[str, Any] | None,
+    risk: str | None,
+    status: str,
+    command_preview: str | None,
+    output: str | None,
+    trace_id: str | None,
+    duration_ms: float,
+    created_at: datetime,
+    updated_at: datetime,
+) -> None:
+    connection.execute(
+        """
+        INSERT OR REPLACE INTO agent_runs (
+            run_id, source, raw_text, parser_name, intent_json, risk, status,
+            command_preview, output, trace_id, duration_ms, created_at, updated_at
+        ) VALUES (
+            :run_id, :source, :raw_text, :parser_name, :intent_json, :risk, :status,
+            :command_preview, :output, :trace_id, :duration_ms, :created_at, :updated_at
+        )
+        """,
+        {
+            "run_id": run_id,
+            "source": source,
+            "raw_text": redact_text(raw_text) or "",
+            "parser_name": parser_name,
+            "intent_json": json.dumps(redact_sensitive(intent), ensure_ascii=False, sort_keys=True)
+            if intent is not None
+            else None,
+            "risk": risk,
+            "status": status,
+            "command_preview": redact_text(command_preview),
+            "output": redact_text(output),
+            "trace_id": trace_id,
+            "duration_ms": max(0, duration_ms),
+            "created_at": created_at.isoformat().replace("+00:00", "Z"),
+            "updated_at": updated_at.isoformat().replace("+00:00", "Z"),
+        },
+    )
+    connection.commit()
+
+
+def get_agent_run(connection: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
+    row = connection.execute("SELECT * FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()
+    return _agent_run_from_row(row) if row is not None else None
+
+
+def list_agent_runs(connection: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        "SELECT * FROM agent_runs ORDER BY updated_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [_agent_run_from_row(row) for row in rows]
+
+
 def insert_abnormal_bar(
     connection: sqlite3.Connection,
     *,
@@ -677,6 +738,12 @@ def _config_change_from_row(row: sqlite3.Row) -> dict[str, Any]:
     payload = dict(row)
     payload["before_config"] = json.loads(payload["before_config"]) if payload["before_config"] else None
     payload["after_config"] = json.loads(payload["after_config"]) if payload["after_config"] else None
+    return payload
+
+
+def _agent_run_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    payload = dict(row)
+    payload["intent"] = json.loads(payload.pop("intent_json")) if payload["intent_json"] else None
     return payload
 
 
