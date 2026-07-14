@@ -1,4 +1,4 @@
-"""SQLite initialization for online runtime state."""
+"""SQLite connection setup and versioned runtime schema initialization."""
 
 from __future__ import annotations
 
@@ -6,8 +6,10 @@ import sqlite3
 from pathlib import Path
 
 from stock_agent.config import DEFAULT_CONFIG, StockAgentConfig, validate_config
+from stock_agent.storage.migrations import apply_migrations
 
 REQUIRED_TABLES = (
+    "schema_migrations",
     "signals",
     "trace_chain",
     "health_metrics",
@@ -23,24 +25,45 @@ REQUIRED_TABLES = (
     "input_control_state",
     "input_interface_presence",
     "input_switch_requests",
+    "agent_tasks",
+    "agent_plans",
+    "agent_steps",
+    "agent_messages",
+    "artifacts",
+    "evidence",
+    "signal_definitions",
+    "candidate_functions",
+    "signal_validations",
+    "signal_versions",
+    "signal_observations",
+    "analyses",
+    "report_drafts",
+    "final_reports",
+    "approvals",
 )
 
 
 def open_database(path: Path) -> sqlite3.Connection:
+    """Open a runtime database and bring it to the latest verified schema."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=5)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA journal_mode = WAL")
     connection.execute("PRAGMA busy_timeout = 5000")
-    _create_tables(connection)
+    try:
+        apply_migrations(connection)
+    except Exception:
+        connection.close()
+        raise
     return connection
 
 
 def initialize_database(path: Path) -> sqlite3.Connection:
-    connection = open_database(path)
-    _create_tables(connection)
-    return connection
+    """Compatibility entry point for callers that initialize a runtime database."""
+
+    return open_database(path)
 
 
 def initialize_runtime_database(
@@ -48,200 +71,7 @@ def initialize_runtime_database(
     config: StockAgentConfig | None = None,
 ) -> sqlite3.Connection:
     runtime_config = config or validate_config(DEFAULT_CONFIG)
-    sqlite_path = root / runtime_config.storage.sqlite_path
-    return initialize_database(sqlite_path)
+    return initialize_database(root / runtime_config.storage.sqlite_path)
 
 
-def _create_tables(connection: sqlite3.Connection) -> None:
-    connection.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS signals (
-            signal_id TEXT PRIMARY KEY,
-            strategy_id TEXT NOT NULL,
-            symbol TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            direction TEXT NOT NULL CHECK (direction IN ('buy_watch', 'sell_watch', 'observe')),
-            strength REAL NOT NULL CHECK (strength >= 0 AND strength <= 1),
-            confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
-            reason TEXT NOT NULL,
-            trace_id TEXT NOT NULL,
-            source_bar_ids TEXT NOT NULL,
-            data_quality TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS trace_chain (
-            trace_id TEXT PRIMARY KEY,
-            parent_id TEXT,
-            module TEXT NOT NULL,
-            input_ref TEXT NOT NULL,
-            output_ref TEXT NOT NULL,
-            status TEXT NOT NULL CHECK (status IN ('success', 'skipped', 'failed')),
-            error_msg TEXT,
-            created_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS health_metrics (
-            metric_id TEXT PRIMARY KEY,
-            timestamp TEXT NOT NULL,
-            module TEXT NOT NULL,
-            heartbeat_at TEXT,
-            data_latency_sec REAL NOT NULL CHECK (data_latency_sec >= 0),
-            error_rate REAL NOT NULL CHECK (error_rate >= 0 AND error_rate <= 1),
-            consecutive_failures INTEGER NOT NULL CHECK (consecutive_failures >= 0),
-            alert_failures INTEGER NOT NULL CHECK (alert_failures >= 0),
-            status TEXT NOT NULL CHECK (status IN ('healthy', 'degraded', 'unhealthy')),
-            details TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS checkpoints (
-            checkpoint_id TEXT PRIMARY KEY,
-            module TEXT NOT NULL,
-            checkpoint_key TEXT NOT NULL,
-            checkpoint_value TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS config_changes (
-            change_id TEXT PRIMARY KEY,
-            status TEXT NOT NULL,
-            source TEXT NOT NULL,
-            before_config TEXT,
-            after_config TEXT,
-            diff TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS notifications (
-            notification_id TEXT PRIMARY KEY,
-            channel TEXT NOT NULL,
-            status TEXT NOT NULL,
-            payload TEXT NOT NULL,
-            retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
-            error_msg TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS news_items (
-            news_id TEXT PRIMARY KEY,
-            symbol TEXT,
-            market TEXT,
-            title TEXT NOT NULL,
-            summary TEXT NOT NULL,
-            url TEXT NOT NULL,
-            source TEXT NOT NULL,
-            published_at TEXT NOT NULL,
-            retention_level TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS signal_statistics (
-            statistic_id TEXT PRIMARY KEY,
-            period TEXT NOT NULL CHECK (period IN ('day', 'month', 'year')),
-            period_start TEXT NOT NULL,
-            period_end TEXT NOT NULL,
-            generated_at TEXT NOT NULL,
-            signal_count INTEGER NOT NULL CHECK (signal_count >= 0),
-            trigger_count INTEGER NOT NULL CHECK (trigger_count >= 0),
-            run_count INTEGER NOT NULL CHECK (run_count >= 0),
-            hit_count INTEGER,
-            details TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS strategy_snapshots (
-            snapshot_id TEXT PRIMARY KEY,
-            date TEXT NOT NULL,
-            enabled_strategies TEXT NOT NULL,
-            strategy_params TEXT NOT NULL,
-            symbols TEXT NOT NULL,
-            data_policy TEXT NOT NULL,
-            watch_window TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS security_audit (
-            audit_id TEXT PRIMARY KEY,
-            timestamp TEXT NOT NULL,
-            source TEXT NOT NULL,
-            actor_ref TEXT,
-            action TEXT NOT NULL,
-            decision TEXT NOT NULL,
-            reason TEXT NOT NULL,
-            raw_text TEXT,
-            details TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS abnormal_bars (
-            quarantine_id TEXT PRIMARY KEY,
-            bar_id TEXT NOT NULL,
-            symbol TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            window TEXT NOT NULL,
-            reason TEXT NOT NULL,
-            severity TEXT NOT NULL,
-            status TEXT NOT NULL,
-            bar_payload TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            reviewed_by TEXT,
-            review_note TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS agent_runs (
-            run_id TEXT PRIMARY KEY,
-            source TEXT NOT NULL,
-            raw_text TEXT NOT NULL,
-            parser_name TEXT NOT NULL,
-            intent_json TEXT,
-            risk TEXT,
-            status TEXT NOT NULL,
-            command_preview TEXT,
-            output TEXT,
-            trace_id TEXT,
-            duration_ms REAL NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_agent_runs_updated_at
-        ON agent_runs(updated_at DESC);
-
-        CREATE TABLE IF NOT EXISTS input_control_state (
-            singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-            active_source TEXT NOT NULL
-                CHECK (active_source IN ('cli', 'telegram', 'fastapi')),
-            active_actor_ref TEXT NOT NULL,
-            activated_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS input_interface_presence (
-            source TEXT PRIMARY KEY
-                CHECK (source IN ('cli', 'telegram', 'fastapi')),
-            actor_ref TEXT NOT NULL,
-            online INTEGER NOT NULL DEFAULT 1 CHECK (online IN (0, 1)),
-            last_seen_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS input_switch_requests (
-            request_id TEXT PRIMARY KEY,
-            from_source TEXT NOT NULL
-                CHECK (from_source IN ('cli', 'telegram', 'fastapi')),
-            to_source TEXT NOT NULL
-                CHECK (to_source IN ('cli', 'telegram', 'fastapi')),
-            requested_by TEXT NOT NULL,
-            status TEXT NOT NULL
-                CHECK (status IN ('pending', 'approved', 'rejected', 'expired')),
-            created_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL,
-            decided_at TEXT,
-            decided_by TEXT
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_input_switch_pending
-        ON input_switch_requests(from_source, status, created_at);
-        """
-    )
-    connection.commit()
+__all__ = ["REQUIRED_TABLES", "initialize_database", "initialize_runtime_database", "open_database"]

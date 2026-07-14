@@ -7,6 +7,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
+import sqlite3
+
 RetentionAction = Literal["keep", "delete_temp", "compress_news"]
 
 
@@ -29,6 +31,41 @@ class RetentionPlan:
     @property
     def affected_count(self) -> int:
         return len([item for item in self.items if item.action != "keep"])
+
+
+@dataclass(frozen=True)
+class ExpiredArtifactRecord:
+    artifact_id: str
+    sha256: str
+    storage_key: str
+
+
+def list_expired_artifacts(
+    connection: sqlite3.Connection,
+    *,
+    now: datetime,
+) -> list[ExpiredArtifactRecord]:
+    """List metadata-backed artifacts eligible for deletion without touching payloads."""
+
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    rows = connection.execute(
+        """
+        SELECT artifact_id, sha256, storage_key
+        FROM artifacts
+        WHERE expires_at IS NOT NULL AND expires_at <= ?
+        ORDER BY expires_at, artifact_id
+        """,
+        (now.isoformat().replace("+00:00", "Z"),),
+    ).fetchall()
+    return [
+        ExpiredArtifactRecord(
+            artifact_id=row["artifact_id"],
+            sha256=row["sha256"],
+            storage_key=row["storage_key"],
+        )
+        for row in rows
+    ]
 
 
 def build_retention_plan(
@@ -124,4 +161,12 @@ def _compress_news_file(path: Path) -> None:
     path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
-__all__ = ["RetentionPlan", "RetentionPlanItem", "build_retention_plan", "execute_retention_plan", "format_retention_plan"]
+__all__ = [
+    "ExpiredArtifactRecord",
+    "RetentionPlan",
+    "RetentionPlanItem",
+    "build_retention_plan",
+    "execute_retention_plan",
+    "format_retention_plan",
+    "list_expired_artifacts",
+]

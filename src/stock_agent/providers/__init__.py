@@ -1,10 +1,10 @@
-"""Market data provider adapters."""
+"""Market data provider adapters.
 
-from stock_agent.providers.broker_market_data import (
-    BrokerMarketDataProvider,
-    BrokerMarketDataProviderError,
-    create_broker_market_data_provider,
-)
+Broker compatibility exports remain lazy so the V2 read-only research import
+graph cannot load broker modules by accident.
+"""
+
+from typing import Any
 from stock_agent.providers.csv_demo import CsvDemoProvider, CsvDemoProviderError
 from stock_agent.providers.live import (
     AlphaVantageProvider,
@@ -42,3 +42,15 @@ __all__ = [
     "create_live_provider",
     "create_twelve_data_provider",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name in {
+        "BrokerMarketDataProvider",
+        "BrokerMarketDataProviderError",
+        "create_broker_market_data_provider",
+    }:
+        from stock_agent.providers import broker_market_data
+
+        return getattr(broker_market_data, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

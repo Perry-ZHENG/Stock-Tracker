@@ -15,7 +15,6 @@ from uuid import uuid4
 from stock_agent.config import StockAgentConfig
 from stock_agent.health import HealthThresholds, record_health_metric
 from stock_agent.providers.base import MarketDataProvider
-from stock_agent.providers.broker_market_data import BrokerMarketDataProviderError, create_broker_market_data_provider
 from stock_agent.providers.csv_demo import CsvDemoProvider, CsvDemoProviderError
 from stock_agent.providers.live import LiveProviderError, create_live_provider
 from stock_agent.providers.twelve_data import (
@@ -68,11 +67,15 @@ class ProviderRegistry:
         config: StockAgentConfig,
         connection: sqlite3.Connection | None = None,
         provider_factories: dict[str, ProviderFactory] | None = None,
+        allowed_provider_names: frozenset[str] | None = None,
     ) -> None:
         self.root = root
         self.config = config
         self.connection = connection
         self.provider_factories = provider_factories or {}
+        self.allowed_provider_names = {
+            provider_name.lower() for provider_name in allowed_provider_names
+        } if allowed_provider_names is not None else None
 
     def fetch_intraday_bars(
         self,
@@ -88,10 +91,10 @@ class ProviderRegistry:
             started = time.perf_counter()
             try:
                 provider = self._create_provider(provider_name)
-                provider_interval = (
+                provider_interval = interval or (
                     self.config.provider.twelve_data.source_interval
                     if provider_name.lower() in {"twelve_data", "twelvedata"}
-                    else interval
+                    else None
                 )
                 bars = provider.fetch_intraday_bars(
                     symbols=symbols,
@@ -138,6 +141,54 @@ class ProviderRegistry:
             message += f": {attempts[-1].provider_name}: {redact_text(attempts[-1].error_msg)}"
         raise ProviderRegistryError(message)
 
+    def fetch_from_provider(
+        self,
+        provider_name: str,
+        *,
+        symbols: list[str] | None = None,
+        interval: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> ProviderFetchResult:
+        """Fetch one allowlisted provider without applying fallback order.
+
+        V2 evidence uses this only for an optional independent comparison source;
+        the legacy fallback API above remains the primary collection path.
+        """
+
+        request_id = _request_id(provider_name)
+        started = time.perf_counter()
+        try:
+            provider = self._create_provider(provider_name)
+            bars = provider.fetch_intraday_bars(
+                symbols=symbols,
+                interval=interval or self.config.provider.twelve_data.source_interval,
+                start=start,
+                end=end,
+            )
+            latency_sec = time.perf_counter() - started
+            return ProviderFetchResult(
+                provider_name=provider_name,
+                bars=bars,
+                attempts=[
+                    ProviderAttempt(
+                        provider_name=provider_name,
+                        status="success",
+                        latency_sec=latency_sec,
+                        request_id=request_id,
+                        bar_count=len(bars),
+                    )
+                ],
+                fallback_used=False,
+                request_id=request_id,
+                provider_health=redact_sensitive(provider.fetch_provider_health()),
+                latency_sec=latency_sec,
+            )
+        except Exception as exc:
+            raise ProviderRegistryError(
+                f"comparison provider failed: {provider_name}: {redact_text(str(exc))}"
+            ) from exc
+
     def _provider_order(self) -> list[str]:
         ordered: list[str] = []
         for provider_name in [*self.config.provider.priority, self.config.provider.default]:
@@ -149,6 +200,8 @@ class ProviderRegistry:
 
     def _create_provider(self, provider_name: str) -> MarketDataProvider:
         normalized = provider_name.lower()
+        if self.allowed_provider_names is not None and normalized not in self.allowed_provider_names:
+            raise ProviderRegistryError(f"provider is not in the V2 read-only allowlist: {provider_name}")
         if provider_name in self.provider_factories:
             return self.provider_factories[provider_name]()
         if normalized in self.provider_factories:
@@ -170,6 +223,11 @@ class ProviderRegistry:
                 api_key_env=self.config.provider.live.api_key_env,
             )
         if normalized in {"broker", "broker_market_data"}:
+            # Kept lazy for the legacy compatibility path. V2 registries pass an
+            # allowlist that excludes this branch, so importing research modules
+            # never loads broker code.
+            from stock_agent.providers.broker_market_data import create_broker_market_data_provider
+
             return create_broker_market_data_provider()
         if normalized in {"cache", "fallback"}:
             raise ProviderRegistryError("cache fallback provider is not implemented yet")
@@ -233,7 +291,7 @@ def _classify_provider_error(exc: Exception) -> ProviderErrorType:
     message = str(exc).lower()
     if isinstance(exc, CsvDemoProviderError):
         return "data"
-    if isinstance(exc, BrokerMarketDataProviderError):
+    if exc.__class__.__name__ == "BrokerMarketDataProviderError":
         return "configuration"
     if isinstance(exc, LiveProviderError) and any(
         token in message for token in ("missing api key", "unsupported", "required")

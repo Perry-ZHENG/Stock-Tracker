@@ -76,6 +76,22 @@ def redact_text(text: str | None, *, extra_secrets: list[str] | tuple[str, ...] 
     return redacted
 
 
+def redact_for_audit(
+    text: str | None,
+    *,
+    retain_text: bool,
+    max_length: int = 1_000,
+) -> str | None:
+    """Apply the raw-text retention policy before writing a security audit row."""
+
+    if not retain_text or text is None:
+        return None
+    redacted = redact_text(text)
+    if redacted is None:
+        return None
+    return redacted[:max_length]
+
+
 def _replace_sensitive_match(match: re.Match[str]) -> str:
     if match.lastindex and match.lastindex >= 2:
         return f"{match.group(1)}={REDACTED}"
@@ -91,4 +107,4 @@ def _is_sensitive_key(key: str) -> bool:
     return any(marker in normalized for marker in _SENSITIVE_KEY_MARKERS)
 
 
-__all__ = ["REDACTED", "redact_sensitive", "redact_text"]
+__all__ = ["REDACTED", "redact_for_audit", "redact_sensitive", "redact_text"]

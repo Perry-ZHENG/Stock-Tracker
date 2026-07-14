@@ -537,6 +537,51 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+def build_v2_compatibility_tools() -> list["ToolAdapter"]:
+    """Expose the existing read-only Tool handlers through the V2 Gateway.
+
+    The import is local to keep the legacy ReAct path independent from the new
+    runtime during migration. Control tools such as ``ask_user`` are deliberately
+    not exposed as V2 research Tools.
+    """
+
+    from stock_agent.tooling.base import ToolAdapter, ToolDescriptor
+    from stock_agent.tooling.legacy import LegacyAgentToolAdapter
+
+    allowed_roles = ["orchestrator", "signal_discovery", "anomaly_analysis", "macro_analysis", "report"]
+    compatible_names = {
+        "query_signals",
+        "query_bars",
+        "fetch_twelve_data_bars",
+        "query_health",
+        "query_trace",
+        "query_news",
+        "query_statistics",
+        "query_schedule",
+        "query_provider_compare",
+        "query_abnormal_bars",
+    }
+    adapters: list[ToolAdapter] = []
+    for name in sorted(compatible_names):
+        tool = build_default_tool_registry().get(name)
+        if tool is None:  # pragma: no cover - protects future legacy registry edits
+            continue
+        adapters.append(
+            LegacyAgentToolAdapter(
+                tool,
+                ToolDescriptor(
+                    name=name,
+                    description=tool.description,
+                    input_schema=tool.args_model.model_json_schema(),
+                    allowed_roles=allowed_roles,
+                    permission="read_only",
+                    source="local",
+                ),
+            )
+        )
+    return adapters
+
+
 __all__ = [
     "AgentTool",
     "AgentToolContext",
@@ -551,5 +596,6 @@ __all__ = [
     "QuerySignalsArgs",
     "QueryStatisticsArgs",
     "QueryTraceArgs",
+    "build_v2_compatibility_tools",
     "build_default_tool_registry",
 ]

@@ -7,9 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from stock_agent.dialog.intents import BlockedAction, CommandIntent, HighRiskBlockedIntent
-from stock_agent.security.redaction import redact_sensitive, redact_text
-from stock_agent.storage.repositories import insert_security_audit
-from stock_agent.tracing import utc_now
+from stock_agent.security.redaction import redact_text
+from stock_agent.security.research_policy import ResearchSafetyPolicy, SafetyCapability, SafetyRequest
 
 OBSERVATION_ONLY_MESSAGE = "本系统只提供观察信号，最终买卖由用户自行决定。"
 SECRET_ACCESS_BLOCKED_MESSAGE = "credential requests are blocked; API keys, tokens, and environment secrets are never displayed by this CLI."
@@ -41,6 +40,7 @@ class TradingActionFirewall:
 
     def __init__(self, connection: sqlite3.Connection | None = None) -> None:
         self.connection = connection
+        self.policy = ResearchSafetyPolicy(connection)
 
     def inspect_intent(
         self,
@@ -52,17 +52,26 @@ class TradingActionFirewall:
     ) -> FirewallDecision:
         if not isinstance(intent, HighRiskBlockedIntent):
             return FirewallDecision(allowed=True)
-        return self.block(
+        decision = self.policy.inspect(
+            SafetyRequest(
+                source=source or intent.source,
+                actor_ref=actor_ref,
+                actor_type="agent" if (source or intent.source) == "llm" else "human_user",
+                requested_capability=_capability_for_legacy_action(intent.requested_action),
+                action_summary=intent.blocked_reason,
+                raw_text=intent.raw_text,
+                details={
+                    "intent_type": intent.intent_type,
+                    "risk": intent.risk,
+                    **(details or {}),
+                },
+            )
+        )
+        return FirewallDecision(
+            allowed=decision.allowed,
             action=intent.requested_action,
-            source=source or intent.source,
-            actor_ref=actor_ref,
-            raw_text=intent.raw_text,
-            reason=intent.blocked_reason,
-            details={
-                "intent_type": intent.intent_type,
-                "risk": intent.risk,
-                **(details or {}),
-            },
+            message=OBSERVATION_ONLY_MESSAGE if not decision.allowed else decision.public_message,
+            audit_id=decision.audit_id,
         )
 
     def block(
@@ -75,25 +84,29 @@ class TradingActionFirewall:
         reason: str = "trading firewall blocks trading, credential, account, and money movement actions",
         details: dict[str, Any] | None = None,
     ) -> FirewallDecision:
-        audit_id = None
-        if self.connection is not None:
-            audit_id = insert_security_audit(
-                self.connection,
-                timestamp=utc_now(),
+        decision = self.policy.inspect(
+            SafetyRequest(
                 source=source,
                 actor_ref=actor_ref,
-                action=action,
-                decision=BLOCKED_DECISION,
-                reason=reason,
+                actor_type="agent" if source == "llm" else "human_user",
+                requested_capability=_capability_for_legacy_action(action),
+                action_summary=reason,
                 raw_text=raw_text,
-                details=redact_sensitive(details or {}),
+                details=details or {},
             )
-        return FirewallDecision(
-            allowed=False,
-            action=action,
-            message=OBSERVATION_ONLY_MESSAGE,
-            audit_id=audit_id,
         )
+        return FirewallDecision(
+            allowed=decision.allowed,
+            action=action,
+            message=OBSERVATION_ONLY_MESSAGE if not decision.allowed else decision.public_message,
+            audit_id=decision.audit_id,
+        )
+
+
+def _capability_for_legacy_action(action: str) -> SafetyCapability:
+    if action in _TRADING_AND_MUTATION_ACTIONS:
+        return action  # type: ignore[return-value]
+    return "unknown_high_risk"
 
 
 def is_firewall_blocked_action(action: str) -> bool:

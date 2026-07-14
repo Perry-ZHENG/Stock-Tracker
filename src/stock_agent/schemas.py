@@ -6,24 +6,17 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import Field, field_validator
+
+from stock_agent.contracts.common import StrictSchema, ensure_utc
 
 Direction = Literal["buy_watch", "sell_watch", "observe"]
 TraceStatus = Literal["success", "skipped", "failed"]
 
 
 def _ensure_utc(value: datetime | None) -> datetime | None:
-    # All datetime fields must be timezone-aware and converted to UTC for consistency
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        raise ValueError("datetime fields must be timezone-aware")
-    return value.astimezone(UTC)
-
-
-class StrictSchema(BaseModel):
-    # All schemas should forbid extra fields to prevent silent errors
-    model_config = ConfigDict(extra="forbid")
+    """Compatibility wrapper for the V2 shared UTC validator."""
+    return ensure_utc(value)
 
 
 class Bar(StrictSchema):

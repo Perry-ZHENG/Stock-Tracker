@@ -6,7 +6,7 @@ the interface local-first so tests and demo mode do not require network access.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Protocol, TypeGuard
 
 from stock_agent.schemas import NewsItem
 
@@ -36,4 +36,10 @@ class StaticNewsProvider:
         return matched[:limit]
 
 
-__all__ = ["NewsProvider", "StaticNewsProvider"]
+def is_local_test_provider(provider: NewsProvider | None) -> TypeGuard[StaticNewsProvider]:
+    """Allow the deterministic fixture provider without a network credential."""
+
+    return isinstance(provider, StaticNewsProvider)
+
+
+__all__ = ["NewsProvider", "StaticNewsProvider", "is_local_test_provider"]
