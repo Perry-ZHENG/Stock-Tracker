@@ -6,10 +6,11 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -17,7 +18,10 @@ from pydantic import BaseModel, Field
 from stock_agent.config_loader import RuntimeConfigContext, load_config
 from stock_agent.dialog.input_gate import InputGate
 from stock_agent.dialog.llm_parser import LlmParser
+from stock_agent.contracts.reports import FinalReport
+from stock_agent.contracts.tasks import ResearchRequest
 from stock_agent.query import QueryService
+from stock_agent.reports.renderers import render_report
 from stock_agent.storage.repositories import (
     list_agent_runs,
     list_config_changes,
@@ -27,6 +31,9 @@ from stock_agent.storage.repositories import (
 from stock_agent.storage.sqlite import open_database
 from stock_agent.web.agent_service import WebAgentError, WebAgentService
 
+if TYPE_CHECKING:
+    from stock_agent.services.agent_service import AgentService
+
 WEB_ROOT = Path(__file__).resolve().parent
 
 
@@ -34,11 +41,21 @@ class AgentPlanRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
 
 
+class ResearchSubmitRequest(BaseModel):
+    request: ResearchRequest
+
+
+class ResearchInputRequest(BaseModel):
+    step_id: str = Field(min_length=1, max_length=256)
+    payload: dict[str, object] = Field(default_factory=dict)
+
+
 def create_app(
     root: Path,
     *,
     config_context: RuntimeConfigContext | None = None,
     llm_parser: LlmParser | None = None,
+    v2_agent_service: "AgentService | None" = None,
 ) -> FastAPI:
     resolved_root = root.resolve()
     context = config_context or load_config(resolved_root)
@@ -47,6 +64,7 @@ def create_app(
         resolved_root,
         config_context=context,
         llm_parser=llm_parser,
+        v2_agent_service=v2_agent_service,
     )
 
     app = FastAPI(
@@ -58,7 +76,13 @@ def create_app(
     app.state.root = resolved_root
     app.state.config_context = context
     app.state.agent_service = agent_service
-    app.mount("/static", StaticFiles(directory=str(WEB_ROOT / "static")), name="static")
+    # The current workbench embeds its UI styles; keep the static route optional
+    # so an API-only deployment does not fail when no assets are packaged.
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(WEB_ROOT / "static"), check_dir=False),
+        name="static",
+    )
 
     @app.get("/")
     def index(request: Request):
@@ -134,6 +158,103 @@ def create_app(
         except WebAgentError as exc:
             status_code = 404 if "not found" in str(exc) else 409
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    @app.post("/api/v2/research")
+    @app.post("/api/v2/research/submit", include_in_schema=False)
+    def submit_research(payload: ResearchSubmitRequest, request: Request):
+        try:
+            return agent_service.submit_research(payload.request, actor_ref=_web_actor(request))
+        except WebAgentError as exc:
+            raise _research_http_error(exc) from exc
+
+    @app.get("/api/v2/research/{task_id}")
+    def research_status(task_id: str, request: Request):
+        try:
+            return agent_service.research_status(task_id, actor_ref=_web_actor(request))
+        except WebAgentError as exc:
+            raise _research_http_error(exc) from exc
+
+    @app.post("/api/v2/research/{task_id}/input")
+    def provide_research_input(task_id: str, payload: ResearchInputRequest, request: Request):
+        try:
+            return agent_service.provide_research_input(
+                task_id,
+                payload.step_id,
+                payload.payload,
+                actor_ref=_web_actor(request),
+            )
+        except WebAgentError as exc:
+            raise _research_http_error(exc) from exc
+
+    @app.post("/api/v2/research/{task_id}/pause")
+    @app.post("/api/v2/research/{task_id}/resume")
+    @app.post("/api/v2/research/{task_id}/cancel")
+    def control_research(task_id: str, request: Request):
+        action = request.url.path.rsplit("/", 1)[-1]
+        try:
+            return agent_service.control_research(task_id, action, actor_ref=_web_actor(request))
+        except WebAgentError as exc:
+            raise _research_http_error(exc) from exc
+
+    @app.get("/api/v2/research/{task_id}/report")
+    @app.get("/api/v2/research/{task_id}/reports/{report_id}")
+    def research_report(
+        task_id: str,
+        request: Request,
+        report_id: str | None = None,
+        output_format: Literal["json", "markdown"] = Query(default="json", alias="format"),
+    ):
+        try:
+            report = agent_service.research_report(task_id, report_id, actor_ref=_web_actor(request))
+        except WebAgentError as exc:
+            raise _research_http_error(exc) from exc
+        if output_format == "markdown":
+            return PlainTextResponse(
+                render_report(FinalReport.model_validate(report), "markdown").decode("utf-8"),
+                media_type="text/markdown",
+            )
+        return report
+
+    @app.get("/api/v2/research/{task_id}/events")
+    async def research_events(task_id: str, request: Request, once: bool = False):
+        async def stream():
+            while True:
+                try:
+                    payload = agent_service.research_status(task_id, actor_ref=_web_actor(request))
+                except WebAgentError as exc:
+                    payload = {"error": str(exc)}
+                event_id = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+                yield f"id: {event_id}\\nevent: research_status\\ndata: {json.dumps(jsonable_encoder(payload), ensure_ascii=False)}\\n\\n"
+                if once or await request.is_disconnected():
+                    break
+                await asyncio.sleep(2)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/api/v2/research/{task_id}/diagnostics")
+    def research_diagnostics(task_id: str):
+        traces = QueryService(resolved_root, config_context=context).execute(
+            "agent-trace",
+            target_id=task_id,
+        )
+        budget = QueryService(resolved_root, config_context=context).execute(
+            "budget",
+            target_id=task_id,
+        )
+        if not traces.ok and not budget.ok:
+            return _query_response(traces, status_code=404)
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "traces": jsonable_encoder(traces.rows),
+            "trace_text": traces.text,
+            "budget": jsonable_encoder(budget.rows[0]) if budget.rows else None,
+            "budget_text": budget.text,
+        }
 
     @app.get("/api/v1/input")
     def input_state():
@@ -259,6 +380,19 @@ def _query_response(result, *, status_code: int = 200) -> JSONResponse:
     return JSONResponse(payload, status_code=resolved_status)
 
 
+def _research_http_error(error: WebAgentError) -> HTTPException:
+    message = str(error)
+    if "is not configured" in message:
+        return HTTPException(status_code=503, detail=message)
+    if "does not exist" in message or "does not belong" in message:
+        return HTTPException(status_code=404, detail=message)
+    if "research is blocked" in message:
+        return HTTPException(status_code=403, detail=message)
+    if "only a" in message or "input interface" in message:
+        return HTTPException(status_code=409, detail=message)
+    return HTTPException(status_code=422, detail=message)
+
+
 def _event_snapshot(root: Path, context: RuntimeConfigContext) -> dict[str, object]:
     sqlite_path = root / context.config.storage.sqlite_path
     if not sqlite_path.exists():
@@ -296,4 +430,4 @@ def _web_actor(request: Request) -> str:
     return f"web:{host}"
 
 
-__all__ = ["AgentPlanRequest", "create_app"]
+__all__ = ["AgentPlanRequest", "ResearchInputRequest", "ResearchSubmitRequest", "create_app"]

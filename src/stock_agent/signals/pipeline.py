@@ -9,9 +9,11 @@ from datetime import UTC
 from typing import Any
 
 from stock_agent.config import StockAgentConfig
+from stock_agent.contracts.evidence import DataEvidence
 from stock_agent.schemas import Bar, Signal, StrategySnapshot, TraceChain
 from stock_agent.storage.repositories import insert_strategy_snapshot, insert_trace_chain
 from stock_agent.strategies.engine import StrategyEngine
+from stock_agent.signals.runner import ActiveSignalRunResult, ActiveSignalRunner, RunnerPolicy
 from stock_agent.tracing import trace_for_signal, utc_now
 
 
@@ -31,10 +33,14 @@ class SignalPipeline:
         config: StockAgentConfig,
         connection: sqlite3.Connection | None = None,
         engine: StrategyEngine | None = None,
+        registry_runner: ActiveSignalRunner | None = None,
+        runner_policy: RunnerPolicy | None = None,
     ) -> None:
         self.config = config
         self.connection = connection
         self.engine = engine or StrategyEngine(config.strategies)
+        self.registry_runner = registry_runner
+        self.runner_policy = runner_policy or RunnerPolicy()
 
     def run(self, bars: list[Bar]) -> SignalPipelineResult:
         engine_result = self.engine.run(bars)
@@ -60,6 +66,18 @@ class SignalPipeline:
         insert_strategy_snapshot(self.connection, result.snapshot)
         for trace in result.traces:
             insert_trace_chain(self.connection, trace)
+
+    def run_registry(self, task_id: str, data_evidence: DataEvidence) -> ActiveSignalRunResult:
+        """Explicit evidence-backed bridge for Agent Runtime and future Worker task contexts.
+
+        The legacy Worker has no AgentTask/DataEvidence at this layer, so it must
+        not fabricate one just to execute Registry code. Callers selecting
+        ``registry`` mode without a configured bridge receive an empty result.
+        """
+
+        if self.runner_policy.mode == "legacy" or self.registry_runner is None:
+            return ActiveSignalRunResult(active_version_count=0)
+        return self.registry_runner.run(task_id, data_evidence)
 
 
 def build_strategy_snapshot(

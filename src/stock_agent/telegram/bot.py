@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -12,11 +13,13 @@ from pathlib import Path
 
 from stock_agent.config_changes import create_config_change
 from stock_agent.config_loader import RuntimeConfigContext, load_config
+from stock_agent.contracts.tasks import ResearchRequest
 from stock_agent.dialog.intents import ClarificationIntent, HighRiskBlockedIntent, PendingChangeIntent, ReadOnlyIntent
 from stock_agent.dialog.input_gate import InputGate, InputGateError
 from stock_agent.dialog.llm_parser import LlmParser
 from stock_agent.query import QueryService
 from stock_agent.security.trading_firewall import TradingActionFirewall
+from stock_agent.services.entrypoints import ResearchEntryAdapter, ResearchEntryError
 from stock_agent.telegram.listener import TelegramCommandResult, handle_telegram_message, resolve_telegram_role
 
 
@@ -61,12 +64,14 @@ class TelegramBot:
         settings: TelegramBotSettings,
         config_context: RuntimeConfigContext | None = None,
         llm_parser: LlmParser | None = None,
+        research_entry: ResearchEntryAdapter | None = None,
     ) -> None:
         self.root = root
         self.connection = connection
         self.settings = settings
         self.config_context = config_context or load_config(root)
         self.llm_parser = llm_parser or LlmParser(enabled=False)
+        self.research_entry = research_entry
         self.input_gate = InputGate.from_config(
             connection,
             self.config_context.config.input_control,
@@ -116,6 +121,10 @@ class TelegramBot:
                     "发送 /input request 申请切换至 Telegram。"
                 ),
             )
+
+        research_result = self._handle_research_command(update, role=role, actor_ref=actor_ref)
+        if research_result is not None:
+            return research_result
 
         if update.text.strip().startswith("/") or update.text.strip().split(" ", 1)[0].lower() in {
             "signals",
@@ -271,6 +280,102 @@ class TelegramBot:
             text="usage: /input status|request|approve REQUEST_ID|reject REQUEST_ID",
         )
 
+    def _handle_research_command(
+        self,
+        update: TelegramUpdate,
+        *,
+        role: str,
+        actor_ref: str,
+    ) -> TelegramOutboundMessage | None:
+        text = update.text.strip()
+        command, _, remainder = text.partition(" ")
+        if command.lower() not in {"/research", "research"}:
+            return None
+        if self.research_entry is None:
+            return TelegramOutboundMessage(
+                ok=False,
+                chat_id=update.chat_id,
+                role=role,
+                text="research_status=unavailable\nmessage=V2 AgentService is not configured",
+            )
+
+        action, _, argument = remainder.strip().partition(" ")
+        action = action.lower()
+        try:
+            if action == "submit":
+                request = ResearchRequest.model_validate_json(argument)
+                status = self.research_entry.submit(
+                    request,
+                    source="telegram",
+                    actor_ref=actor_ref,
+                    actor_type="human_admin" if role == "admin" else "human_user",
+                )
+                return _research_outbound(update.chat_id, role, status, action="submitted")
+            if action == "status" and argument:
+                status = self.research_entry.status(
+                    argument.strip(),
+                    source="telegram",
+                    actor_ref=actor_ref,
+                    actor_type="human_admin" if role == "admin" else "human_user",
+                )
+                return _research_outbound(update.chat_id, role, status, action="status")
+            if action in {"pause", "resume", "cancel"} and argument:
+                status = self.research_entry.control(
+                    argument.strip(),
+                    action,
+                    source="telegram",
+                    actor_ref=actor_ref,
+                    actor_type="human_admin" if role == "admin" else "human_user",
+                )
+                return _research_outbound(update.chat_id, role, status, action=action)
+            if action == "input":
+                task_id, step_id, payload = _parse_research_input(argument)
+                status = self.research_entry.provide_input(
+                    task_id,
+                    step_id,
+                    payload,
+                    source="telegram",
+                    actor_ref=actor_ref,
+                    actor_type="human_admin" if role == "admin" else "human_user",
+                )
+                return _research_outbound(update.chat_id, role, status, action="input_received")
+            if action == "report" and argument:
+                task_id, _, report_id = argument.partition(" ")
+                report = self.research_entry.report(
+                    task_id,
+                    report_id.strip() or None,
+                    source="telegram",
+                    actor_ref=actor_ref,
+                    actor_type="human_admin" if role == "admin" else "human_user",
+                )
+                return TelegramOutboundMessage(
+                    ok=True,
+                    chat_id=update.chat_id,
+                    role=role,
+                    text=(
+                        f"research_task={task_id}\n"
+                        f"report_id={report['report_id']}\n"
+                        f"summary={report['draft']['summary']}"
+                    ),
+                )
+        except (ResearchEntryError, ValueError, json.JSONDecodeError) as exc:
+            return TelegramOutboundMessage(
+                ok=False,
+                chat_id=update.chat_id,
+                role=role,
+                text=f"research_status=failed\nmessage={exc}",
+            )
+        return TelegramOutboundMessage(
+            ok=False,
+            chat_id=update.chat_id,
+            role=role,
+            text=(
+                "usage: /research submit REQUEST_JSON | status TASK_ID | "
+                "pause TASK_ID | resume TASK_ID | cancel TASK_ID | "
+                "input TASK_ID STEP_ID PAYLOAD_JSON | report TASK_ID [REPORT_ID]"
+            ),
+        )
+
 
 def check_telegram_bot_startup(settings: TelegramBotSettings) -> TelegramBotStartup:
     if not settings.token:
@@ -328,6 +433,39 @@ def _outbound(chat_id: int, result: TelegramCommandResult) -> TelegramOutboundMe
         role=result.role,
         change_id=result.change_id,
     )
+
+
+def _research_outbound(
+    chat_id: int,
+    role: str,
+    status: dict[str, object],
+    *,
+    action: str,
+) -> TelegramOutboundMessage:
+    task = status["task"]
+    assert isinstance(task, dict)
+    return TelegramOutboundMessage(
+        ok=True,
+        chat_id=chat_id,
+        role=role,
+        text=(
+            f"research_action={action}\n"
+            f"task_id={task['task_id']}\n"
+            f"status={task['status']}\n"
+            f"report_id={status.get('report_id') or 'pending'}"
+        ),
+    )
+
+
+def _parse_research_input(argument: str) -> tuple[str, str, dict[str, object]]:
+    task_id, separator, remainder = argument.strip().partition(" ")
+    step_id, separator_two, payload_text = remainder.strip().partition(" ")
+    if not task_id or not separator or not step_id or not separator_two:
+        raise ValueError("input requires TASK_ID STEP_ID PAYLOAD_JSON")
+    payload = json.loads(payload_text)
+    if not isinstance(payload, dict):
+        raise ValueError("research input payload must be a JSON object")
+    return task_id, step_id, payload
 
 
 def _diff_text(intent: PendingChangeIntent) -> str:

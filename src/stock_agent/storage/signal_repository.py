@@ -11,10 +11,12 @@ from stock_agent.contracts.signals import (
     ExistingSignal,
     SignalApproval,
     SignalObservation,
+    SignalProposal,
     SignalValidationResult,
     SignalVersion,
 )
 from stock_agent.security.redaction import redact_sensitive
+from stock_agent.signal_lab.interface import CandidateBuildProvenance
 
 
 class SignalRepository:
@@ -87,6 +89,54 @@ class SignalRepository:
             ),
         )
         self.connection.commit()
+
+    def save_proposal(self, task_id: str, proposal: SignalProposal, *, created_at: datetime) -> None:
+        """Persist the verified proposal used by a Candidate build for later audit."""
+
+        self.connection.execute(
+            """
+            INSERT INTO signal_proposals (proposal_id, task_id, payload_json, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(proposal_id) DO NOTHING
+            """,
+            (proposal.proposal_id, task_id, _json(proposal.model_dump(mode="json")), _timestamp(created_at)),
+        )
+        self.connection.commit()
+
+    def save_build_provenance(self, provenance: CandidateBuildProvenance) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO candidate_build_provenance (
+                candidate_id, task_id, proposal_id, build_fingerprint, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                provenance.candidate_id,
+                provenance.task_id,
+                provenance.proposal.proposal_id,
+                provenance.build_fingerprint,
+                _json(provenance.model_dump(mode="json")),
+                _timestamp(provenance.created_at),
+            ),
+        )
+        self.connection.commit()
+
+    def get_build_provenance(self, candidate_id: str) -> CandidateBuildProvenance | None:
+        row = self.connection.execute(
+            "SELECT payload_json FROM candidate_build_provenance WHERE candidate_id = ?", (candidate_id,)
+        ).fetchone()
+        return CandidateBuildProvenance.model_validate_json(row["payload_json"]) if row is not None else None
+
+    def find_candidate_ids_by_build_fingerprint(self, task_id: str, build_fingerprint: str) -> list[str]:
+        rows = self.connection.execute(
+            """
+            SELECT candidate_id FROM candidate_build_provenance
+            WHERE task_id = ? AND build_fingerprint = ?
+            ORDER BY created_at, candidate_id
+            """,
+            (task_id, build_fingerprint),
+        ).fetchall()
+        return [str(row["candidate_id"]) for row in rows]
 
     def get_candidate(self, candidate_id: str) -> CandidateFunction | None:
         row = self.connection.execute(
@@ -175,6 +225,43 @@ class SignalRepository:
             approved_by=row["approved_by"],
             approved_at=row["approved_at"],
         )
+
+    def list_versions(self, signal_id: str) -> list[SignalVersion]:
+        rows = self.connection.execute(
+            "SELECT * FROM signal_versions WHERE signal_id = ? ORDER BY version", (signal_id,)
+        ).fetchall()
+        return [
+            SignalVersion(
+                signal_id=row["signal_id"],
+                version=row["version"],
+                status=row["status"],
+                source_hash=row["source_hash"],
+                validation_id=row["validation_id"],
+                approved_by=row["approved_by"],
+                approved_at=row["approved_at"],
+            )
+            for row in rows
+        ]
+
+    def get_candidate_by_source_hash(self, source_hash: str) -> CandidateFunction | None:
+        row = self.connection.execute(
+            "SELECT candidate_id FROM candidate_functions WHERE source_hash = ? ORDER BY created_at DESC LIMIT 1",
+            (source_hash,),
+        ).fetchone()
+        return self.get_candidate(row["candidate_id"]) if row is not None else None
+
+    def list_active_versions(self) -> list[SignalVersion]:
+        rows = self.connection.execute(
+            "SELECT * FROM signal_versions WHERE status = 'active' ORDER BY signal_id, version"
+        ).fetchall()
+        return [
+            SignalVersion(
+                signal_id=row["signal_id"], version=row["version"], status=row["status"],
+                source_hash=row["source_hash"], validation_id=row["validation_id"],
+                approved_by=row["approved_by"], approved_at=row["approved_at"],
+            )
+            for row in rows
+        ]
 
     def append_observation(self, observation: SignalObservation) -> None:
         payload = observation.model_dump(mode="json")

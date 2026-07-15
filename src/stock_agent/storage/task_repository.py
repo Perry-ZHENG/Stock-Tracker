@@ -368,6 +368,53 @@ class TaskRepository:
             for row in rows
         ]
 
+    def save_step_input(self, task_id: str, step_id: str, payload: object, *, updated_at: datetime) -> None:
+        """Persist the typed input needed to resume one runtime step after restart."""
+
+        row = self.connection.execute(
+            "SELECT task_id FROM agent_steps WHERE step_id = ?", (step_id,)
+        ).fetchone()
+        if row is None or row["task_id"] != task_id:
+            raise RepositoryStateError("step does not belong to the supplied task")
+        self.connection.execute(
+            """
+            INSERT INTO agent_step_payloads (step_id, task_id, input_json, output_artifact_id, updated_at)
+            VALUES (?, ?, ?, NULL, ?)
+            ON CONFLICT(step_id) DO UPDATE SET input_json = excluded.input_json, updated_at = excluded.updated_at
+            """,
+            (step_id, task_id, _json(payload), _timestamp(updated_at)),
+        )
+        self.connection.commit()
+
+    def get_step_input(self, task_id: str, step_id: str) -> object | None:
+        row = self.connection.execute(
+            "SELECT input_json FROM agent_step_payloads WHERE task_id = ? AND step_id = ?", (task_id, step_id)
+        ).fetchone()
+        return json.loads(row["input_json"]) if row is not None else None
+
+    def record_step_output(self, task_id: str, step_id: str, *, artifact_id: str, updated_at: datetime) -> None:
+        row = self.connection.execute(
+            "SELECT task_id FROM agent_step_payloads WHERE step_id = ?", (step_id,)
+        ).fetchone()
+        if row is None or row["task_id"] != task_id:
+            raise RepositoryStateError("a step output requires a persisted input for the same task")
+        self.connection.execute(
+            """
+            UPDATE agent_step_payloads
+            SET output_artifact_id = ?, updated_at = ?
+            WHERE step_id = ? AND task_id = ?
+            """,
+            (artifact_id, _timestamp(updated_at), step_id, task_id),
+        )
+        self.connection.commit()
+
+    def get_step_output_artifact_id(self, task_id: str, step_id: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT output_artifact_id FROM agent_step_payloads WHERE task_id = ? AND step_id = ?",
+            (task_id, step_id),
+        ).fetchone()
+        return str(row["output_artifact_id"]) if row is not None and row["output_artifact_id"] is not None else None
+
     def register_artifact(
         self,
         task_id: str,

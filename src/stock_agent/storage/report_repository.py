@@ -7,6 +7,7 @@ import sqlite3
 
 from stock_agent.contracts.analysis import AnomalyAnalysis, MacroAnalysis
 from stock_agent.contracts.reports import FinalReport, ReportDraft
+from stock_agent.observability import AgentTrace, AgentTraceRecorder
 from stock_agent.security.redaction import redact_sensitive
 
 
@@ -79,9 +80,42 @@ class ReportRepository:
             ),
         )
         self.connection.commit()
+        AgentTraceRecorder(self.connection).record(
+            AgentTrace(
+                trace_id=f"trace-report-{report.report_id}",
+                task_id=report.draft.task_id,
+                component="report",
+                status="success",
+                input_ref={
+                    "draft_id": report.draft.draft_id,
+                    "claim_ids": [claim.claim_id for claim in report.draft.claims],
+                },
+                output_ref={
+                    "report_id": report.report_id,
+                    "validation_status": report.validation.status,
+                    "claim_count": len(report.draft.claims),
+                },
+                created_at=report.published_at,
+            )
+        )
 
     def get_final(self, report_id: str) -> FinalReport | None:
         row = self.connection.execute("SELECT payload_json FROM final_reports WHERE report_id = ?", (report_id,)).fetchone()
+        return FinalReport.model_validate_json(row["payload_json"]) if row is not None else None
+
+    def get_latest_final_for_task(self, task_id: str) -> FinalReport | None:
+        """Return the most recently published validated report within one task scope."""
+
+        row = self.connection.execute(
+            """
+            SELECT payload_json
+            FROM final_reports
+            WHERE task_id = ?
+            ORDER BY published_at DESC, report_id DESC
+            LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
         return FinalReport.model_validate_json(row["payload_json"]) if row is not None else None
 
 

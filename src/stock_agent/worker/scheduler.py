@@ -7,6 +7,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from stock_agent.health import HealthThresholds, record_health_metric
 from stock_agent.tracing import utc_now
@@ -84,6 +85,7 @@ class Worker:
         pipeline: WorkerPipeline | None = None,
         recovery_manager: CrashRecoveryManager | None = None,
         identity: WorkerIdentity | None = None,
+        research_tick: Callable[[str], object] | None = None,
     ) -> None:
         self.connection = connection
         self.lock_path = lock_path
@@ -92,6 +94,9 @@ class Worker:
         self.pipeline = pipeline
         self.recovery_manager = recovery_manager or CrashRecoveryManager(connection)
         self.identity = identity or build_worker_identity()
+        # Research Agent work is deliberately invoked by a separate scheduler,
+        # never inside the latency-sensitive market-data tick below.
+        self.research_tick = research_tick
         self._stop_requested = False
 
     def request_stop(self) -> None:
@@ -177,3 +182,8 @@ class Worker:
 
     def fill_data_gaps(self) -> list[str]:
         return []
+
+    def run_research_tick(self) -> object | None:
+        """Run one externally scheduled subscription tick outside WorkerPipeline."""
+
+        return self.research_tick(self.identity.instance_id) if self.research_tick is not None else None

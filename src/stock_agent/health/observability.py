@@ -24,6 +24,9 @@ OBSERVED_MODULES = (
     "supervisor",
     "notification",
     "worker",
+    "v2_agent_runtime",
+    "tool_gateway",
+    "signal_sandbox",
 )
 
 

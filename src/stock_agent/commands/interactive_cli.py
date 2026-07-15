@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +13,8 @@ from typing import TextIO
 
 from stock_agent.config_changes import create_config_change
 from stock_agent.config_loader import RuntimeConfigContext, load_config
+from stock_agent.contracts.reports import FinalReport
+from stock_agent.contracts.tasks import ResearchRequest
 from stock_agent.dialog.intents import (
     ClarificationIntent,
     HighRiskBlockedIntent,
@@ -25,7 +28,9 @@ from stock_agent.dialog.langchain_adapter import build_langchain_client
 from stock_agent.dialog.llm_parser import LlmParser
 from stock_agent.query import QueryService
 from stock_agent.security.trading_firewall import TradingActionFirewall, blocked_message
+from stock_agent.services.entrypoints import ResearchEntryAdapter, ResearchEntryError
 from stock_agent.storage.sqlite import initialize_runtime_database
+from stock_agent.reports.renderers import render_report
 
 
 def run_interactive_cli(
@@ -36,6 +41,7 @@ def run_interactive_cli(
     config_context: RuntimeConfigContext | None = None,
     llm_parser: LlmParser | None = None,
     chat_client: ChatClient | None = None,
+    research_entry: ResearchEntryAdapter | None = None,
 ) -> int:
     input_stream = input_stream or sys.stdin
     output = output_stream or sys.stdout
@@ -126,6 +132,15 @@ def run_interactive_cli(
                 output.flush()
                 continue
 
+            if _handle_research_command(
+                text,
+                research_entry=research_entry,
+                actor_ref=actor_ref,
+                output=output,
+            ):
+                output.flush()
+                continue
+
             plan = build_interaction_plan(text, llm_parser=llm_parser, chat_client=chat_client)
             if plan.is_chat:
                 output.write(format_interaction_plan(plan))
@@ -201,6 +216,93 @@ def _handle_input_control_command(
             f"active_input={request.to_source if request.status == 'approved' else request.from_source}\n"
         )
     return True
+
+
+def _handle_research_command(
+    text: str,
+    *,
+    research_entry: ResearchEntryAdapter | None,
+    actor_ref: str,
+    output: TextIO,
+) -> bool:
+    command, _, remainder = text.partition(" ")
+    if command.lower() != "research":
+        return False
+    if research_entry is None:
+        output.write("research_status=unavailable\nmessage=V2 AgentService is not configured\n")
+        return True
+
+    action, _, argument = remainder.strip().partition(" ")
+    action = action.lower()
+    try:
+        if action == "submit":
+            status = research_entry.submit(
+                ResearchRequest.model_validate_json(argument),
+                source="cli",
+                actor_ref=actor_ref,
+            )
+            output.write(_format_research_status(status, action="submitted"))
+            return True
+        if action in {"status", "watch"} and argument:
+            status = research_entry.status(argument.strip(), source="cli", actor_ref=actor_ref)
+            output.write(_format_research_status(status, action=action))
+            return True
+        if action in {"pause", "resume", "cancel"} and argument:
+            status = research_entry.control(argument.strip(), action, source="cli", actor_ref=actor_ref)
+            output.write(_format_research_status(status, action=action))
+            return True
+        if action == "input":
+            task_id, step_id, payload = _parse_research_input(argument)
+            status = research_entry.provide_input(
+                task_id,
+                step_id,
+                payload,
+                source="cli",
+                actor_ref=actor_ref,
+            )
+            output.write(_format_research_status(status, action="input_received"))
+            return True
+        if action == "report" and argument:
+            task_id, _, report_id = argument.partition(" ")
+            report = research_entry.report(
+                task_id,
+                report_id.strip() or None,
+                source="cli",
+                actor_ref=actor_ref,
+            )
+            output.write(render_report(FinalReport.model_validate(report), "markdown").decode("utf-8") + "\n")
+            return True
+    except (ResearchEntryError, ValueError, json.JSONDecodeError) as exc:
+        output.write(f"research_status=failed\nmessage={exc}\n")
+        return True
+    output.write(
+        "usage: research submit REQUEST_JSON | status TASK_ID | watch TASK_ID | "
+        "pause TASK_ID | resume TASK_ID | cancel TASK_ID | "
+        "input TASK_ID STEP_ID PAYLOAD_JSON | report TASK_ID [REPORT_ID]\n"
+    )
+    return True
+
+
+def _format_research_status(status: dict[str, object], *, action: str) -> str:
+    task = status["task"]
+    assert isinstance(task, dict)
+    return (
+        f"research_action={action}\n"
+        f"task_id={task['task_id']}\n"
+        f"status={task['status']}\n"
+        f"report_id={status.get('report_id') or 'pending'}\n"
+    )
+
+
+def _parse_research_input(argument: str) -> tuple[str, str, dict[str, object]]:
+    task_id, separator, remainder = argument.strip().partition(" ")
+    step_id, separator_two, payload_text = remainder.strip().partition(" ")
+    if not task_id or not separator or not step_id or not separator_two:
+        raise ValueError("input requires TASK_ID STEP_ID PAYLOAD_JSON")
+    payload = json.loads(payload_text)
+    if not isinstance(payload, dict):
+        raise ValueError("research input payload must be a JSON object")
+    return task_id, step_id, payload
 
 
 def _run_cli_heartbeat(

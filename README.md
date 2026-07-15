@@ -4,6 +4,8 @@
 
 Stock Agent is a local-first stock monitoring agent framework for US market watch workflows.
 
+> V2 adds a bounded multi-Agent research path: typed research tasks, evidence-backed reports, read-only MCP, isolated signal experiments and human-only signal approval. It never performs trading. See [V2 architecture](docs/v2_architecture.md) and [V2 operations](docs/v2_operations.md).
+
 It is designed to:
 
 - Load demo or live market data.

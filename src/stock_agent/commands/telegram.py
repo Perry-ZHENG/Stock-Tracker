@@ -9,6 +9,7 @@ from threading import Event
 from typing import TextIO
 
 from stock_agent.config_loader import RuntimeConfigContext, load_config
+from stock_agent.services.entrypoints import ResearchEntryAdapter
 from stock_agent.storage.sqlite import initialize_runtime_database
 from stock_agent.telegram.bot import (
     TelegramBot,
@@ -26,6 +27,7 @@ def run_telegram(
     api: TelegramHttpApi | None = None,
     stop_event: Event | None = None,
     once: bool = False,
+    research_entry: ResearchEntryAdapter | None = None,
 ) -> int:
     output = stream or sys.stdout
     config_context = config_context or load_config(root)
@@ -58,6 +60,7 @@ def run_telegram(
             allowed_chat_ids=config.telegram.allowed_chat_ids,
         ),
         config_context=config_context,
+        research_entry=research_entry,
     )
     transport = api or TelegramHttpApi(token)
     stop = stop_event or Event()

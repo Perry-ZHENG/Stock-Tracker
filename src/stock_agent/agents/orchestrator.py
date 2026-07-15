@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from stock_agent.agents.planner import AgentPlanner, PlanningContext, PlanningError
 from stock_agent.contracts.evidence import EvidenceGapRequest
 from stock_agent.contracts.tasks import AgentPlan, AgentStep, AgentTask
+from stock_agent.observability import AgentTrace, AgentTraceRecorder
+from stock_agent.security.research_policy import ResearchSafetyPolicy, SafetyRequest
 from stock_agent.storage.repositories import insert_trace_chain
 from stock_agent.storage.task_repository import RepositoryStateError, TaskRepository
 from stock_agent.tracing import create_trace
@@ -20,14 +23,23 @@ class OrchestratorError(RuntimeError):
 class Orchestrator:
     """The only V2 component allowed to create plans and Agent steps."""
 
-    def __init__(self, connection: sqlite3.Connection, *, planner: AgentPlanner | None = None) -> None:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        planner: AgentPlanner | None = None,
+        safety_policy: ResearchSafetyPolicy | None = None,
+    ) -> None:
         self.connection = connection
         self.repository = TaskRepository(connection)
         self.planner = planner or AgentPlanner()
+        self.safety_policy = safety_policy or ResearchSafetyPolicy(connection)
+        self.trace_recorder = AgentTraceRecorder(connection)
 
     def start(self, task_id: str, context: PlanningContext, *, now: datetime | None = None) -> AgentPlan:
         active_now = _utc_now(now)
         task = self._task(task_id)
+        self._authorize(task, task.request.question, action="start", now=active_now)
         if task.status != "pending":
             raise OrchestratorError("only a pending task can receive its initial plan")
         try:
@@ -42,6 +54,7 @@ class Orchestrator:
     def request_evidence(self, gap: EvidenceGapRequest, *, now: datetime | None = None) -> AgentPlan:
         active_now = _utc_now(now)
         task = self._task(gap.task_id)
+        self._authorize(task, gap.reason, action="replan", now=active_now)
         if task.status != "running":
             raise OrchestratorError("evidence gaps can only be planned for a running task")
         previous = self.repository.get_latest_plan(task.task_id)
@@ -110,6 +123,34 @@ class Orchestrator:
         if task is None:
             raise OrchestratorError(f"task {task_id} does not exist")
         return task
+
+    def _authorize(self, task: AgentTask, raw_text: str, *, action: str, now: datetime) -> None:
+        decision = self.safety_policy.inspect(
+            SafetyRequest(
+                source="orchestrator",
+                actor_type="system",
+                requested_capability="research",
+                raw_text=raw_text,
+                details={"action": action},
+            )
+        )
+        if decision.allowed:
+            return
+        self.trace_recorder.record(
+            AgentTrace(
+                trace_id=f"trace-safety-{task.task_id}-{uuid4().hex}",
+                task_id=task.task_id,
+                component="plan",
+                status="failed",
+                error_category="safety",
+                input_ref={"boundary": "orchestrator", "action": action},
+                output_ref={"audit_id": decision.audit_id, "reason_code": decision.reason_code},
+                error_message=decision.reason_code,
+                created_at=now,
+            )
+        )
+        audit_id = f" audit_id={decision.audit_id}" if decision.audit_id else ""
+        raise OrchestratorError(f"research is blocked: {decision.reason_code}.{audit_id}")
 
     def _trace(self, plan: AgentPlan, *, action: str, now: datetime) -> None:
         insert_trace_chain(

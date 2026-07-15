@@ -30,3 +30,11 @@ remove it from Git history before publishing the repository.
 This project is not an automated trading system. Security reports related to
 brokerage execution, account access, or fund movement should assume those flows
 are out of scope unless such integrations are explicitly added later.
+
+## V2 Research Boundaries
+
+V2 applies one `ResearchSafetyPolicy` at user entry, Agent service, planning,
+Tool/MCP, Sandbox, signal registry and report finalisation. MCP is read-only;
+candidate code executes only in the isolated Sandbox; only a configured human
+administrator may activate a validated signal. Prompts, news bodies, candidate
+source and absolute paths must not be written to diagnostics.

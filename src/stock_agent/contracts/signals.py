@@ -148,11 +148,14 @@ class SignalValidationResult(StrictSchema):
     stability: StabilityResult
     limitations: list[str] = Field(default_factory=list)
     decision: ValidationDecision
+    metrics_artifact: ArtifactRef | None = None
 
     @model_validator(mode="after")
     def _validate_decision(self) -> "SignalValidationResult":
         if any(reference.kind != "bars" for reference in self.dataset_refs):
             raise ValueError("dataset_refs must only contain bars artifacts")
+        if self.metrics_artifact is not None and self.metrics_artifact.kind != "validation_metrics":
+            raise ValueError("metrics_artifact must have kind='validation_metrics'")
         if self.decision == "pass" and not all(check.passed for check in self.leakage_checks):
             raise ValueError("a passing validation result requires all leakage checks to pass")
         return self

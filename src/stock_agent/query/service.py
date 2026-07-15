@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from stock_agent.config_loader import RuntimeConfigContext, load_config
 from stock_agent.knowledge import generate_signal_statistics, persist_signal_statistics
 from stock_agent.news.service import NewsQueryService
+from stock_agent.observability import AgentTraceRecorder, BudgetLedger
 from stock_agent.scheduler import WatchSchedule, build_watch_schedule
 from stock_agent.schemas import Bar, Signal, TraceChain
 from stock_agent.storage.repositories import (
@@ -27,7 +28,20 @@ from stock_agent.storage.repositories import (
 )
 from stock_agent.storage.sqlite import open_database
 
-QueryName = Literal["signals", "health", "config-changes", "news", "stats", "schedule", "bars", "trace", "provider-compare", "abnormal-bars"]
+QueryName = Literal[
+    "signals",
+    "health",
+    "config-changes",
+    "news",
+    "stats",
+    "schedule",
+    "bars",
+    "trace",
+    "agent-trace",
+    "budget",
+    "provider-compare",
+    "abnormal-bars",
+]
 
 
 @dataclass(frozen=True)
@@ -92,7 +106,7 @@ class QueryService:
 
         sqlite_path = self.root / self.config.storage.sqlite_path
         if not sqlite_path.exists():
-            prefix = "trace_error" if query == "trace" else "query_error"
+            prefix = "trace_error" if query in {"trace", "agent-trace"} else "query_error"
             text = f"{prefix}=no runtime database\nsqlite_path={sqlite_path}\n"
             return QueryResult(ok=False, query=query, text=text, rows=[], message="no runtime database")
 
@@ -162,6 +176,10 @@ class QueryService:
             elif query == "trace":
                 trace_result = _query_trace(connection, target_id)
                 return trace_result
+            elif query == "agent-trace":
+                return _query_agent_trace(connection, target_id)
+            elif query == "budget":
+                return _query_budget(connection, target_id)
             elif query == "provider-compare":
                 rows = [trace for trace in list_trace_chain(connection, limit=limit) if trace.module == "provider_compare"]
                 text = _format_provider_compare(rows)
@@ -261,6 +279,32 @@ def _query_trace(connection, target_id: str | None) -> QueryResult:
         return QueryResult(ok=False, query="trace", text=text, rows=[], message="not found")
     rows = [item for item in (signal, trace) if item is not None]
     return QueryResult(ok=True, query="trace", text=_format_trace_detail(query_id=target_id, signal=signal, trace=trace), rows=rows)
+
+
+def _query_agent_trace(connection, task_id: str | None) -> QueryResult:
+    if not task_id:
+        text = "agent_trace_error=missing task id; usage: stock-agent cli agent-trace TASK_ID\n"
+        return QueryResult(ok=False, query="agent-trace", text=text, rows=[], message="missing task id")
+    recorder = AgentTraceRecorder(connection)
+    traces = recorder.list_task(task_id)
+    metric = recorder.health(task_id)
+    return QueryResult(
+        ok=True,
+        query="agent-trace",
+        text=_format_agent_traces(task_id, traces, metric.details),
+        rows=traces,
+    )
+
+
+def _query_budget(connection, task_id: str | None) -> QueryResult:
+    if not task_id:
+        text = "budget_error=missing task id; usage: stock-agent cli budget TASK_ID\n"
+        return QueryResult(ok=False, query="budget", text=text, rows=[], message="missing task id")
+    snapshot = BudgetLedger(connection).get(task_id)
+    if snapshot is None:
+        text = f"budget_error=not found\ntask_id={task_id}\n"
+        return QueryResult(ok=False, query="budget", text=text, rows=[], message="not found")
+    return QueryResult(ok=True, query="budget", text=_format_budget(snapshot), rows=[snapshot])
 
 
 def _signal_from_trace_output(connection, trace: TraceChain) -> Signal | None:
@@ -461,6 +505,54 @@ def _format_trace_detail(*, query_id: str, signal: Signal | None, trace: TraceCh
     else:
         lines.append("trace_status=missing")
     return "\n".join(lines) + "\n"
+
+
+def _format_agent_traces(task_id: str, traces, health_details: object) -> str:
+    """Expose linkage metadata only; values may contain untrusted market content."""
+
+    details = health_details if isinstance(health_details, dict) else {}
+    lines = [
+        "agent_trace_status=ok",
+        f"task_id={task_id}",
+        f"queue_depth={details.get('queue_depth', 0)}",
+        f"failure_rate={details.get('failed_trace_count', 0)}/{details.get('trace_count', 0)}",
+        f"mcp_available={str(details.get('mcp_available', True)).lower()}",
+        f"sandbox_healthy={str(details.get('sandbox_healthy', True)).lower()}",
+        "created_at | trace_id | component | status | error_category | duration_ms | input_keys | output_keys",
+    ]
+    for trace in traces:
+        lines.append(
+            " | ".join(
+                [
+                    trace.created_at.isoformat().replace("+00:00", "Z"),
+                    trace.trace_id,
+                    trace.component,
+                    trace.status,
+                    trace.error_category or "",
+                    str(trace.duration_ms),
+                    ",".join(sorted(trace.input_ref)),
+                    ",".join(sorted(trace.output_ref)),
+                ]
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _format_budget(snapshot) -> str:
+    return "\n".join(
+        [
+            "budget_status=ok",
+            f"task_id={snapshot.task_id}",
+            f"model_calls={snapshot.used_model_calls}/{snapshot.max_model_calls}",
+            f"tool_calls={snapshot.used_tool_calls}/{snapshot.max_tool_calls}",
+            f"input_tokens={snapshot.input_tokens}",
+            f"output_tokens={snapshot.output_tokens}",
+            f"estimated_cost_usd={snapshot.estimated_cost_usd:.6f}",
+            f"sandbox_cpu_ms={snapshot.sandbox_cpu_ms}",
+            f"sandbox_memory_mb_ms={snapshot.sandbox_memory_mb_ms}",
+            f"revision={snapshot.revision}",
+        ]
+    ) + "\n"
 
 
 def _format_ref(value) -> str:

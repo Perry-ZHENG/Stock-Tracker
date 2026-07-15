@@ -7,6 +7,7 @@ import hashlib
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from stock_agent.agent.runner import ReactToolAgent
@@ -27,8 +28,13 @@ from stock_agent.dialog.langchain_adapter import build_langchain_client
 from stock_agent.dialog.llm_parser import LlmParser
 from stock_agent.query import QueryService
 from stock_agent.security.trading_firewall import TradingActionFirewall, blocked_message
+from stock_agent.services.entrypoints import ResearchEntryAdapter, ResearchEntryError
 from stock_agent.storage.repositories import get_agent_run, insert_agent_run
 from stock_agent.storage.sqlite import initialize_runtime_database
+
+if TYPE_CHECKING:
+    from stock_agent.contracts.tasks import ResearchRequest
+    from stock_agent.services.agent_service import AgentService
 
 
 class WebAgentError(ValueError):
@@ -43,6 +49,7 @@ class WebAgentService:
         config_context: RuntimeConfigContext | None = None,
         llm_parser: LlmParser | None = None,
         react_agent: ReactToolAgent | None = None,
+        v2_agent_service: "AgentService | None" = None,
     ) -> None:
         self.root = root
         self.config_context = config_context or load_config(root)
@@ -55,6 +62,86 @@ class WebAgentService:
             root,
             config_context=self.config_context,
         )
+        self.v2_agent_service = v2_agent_service
+        self.research_entry = ResearchEntryAdapter(v2_agent_service) if v2_agent_service is not None else None
+
+    def submit_research(self, request: "ResearchRequest", *, actor_ref: str = "local_web") -> dict[str, object]:
+        """Bridge new Web research submissions to the shared V2 lifecycle service.
+
+        The legacy ``plan`` method remains a read-only query compatibility path;
+        it is never used to create or execute a V2 research task.
+        """
+
+        self._require_research_input(actor_ref)
+        try:
+            return self._research_entry().submit(
+                request,
+                source="web",
+                actor_ref=actor_ref,
+            )
+        except ResearchEntryError as exc:
+            raise WebAgentError(str(exc)) from exc
+
+    def research_status(self, task_id: str, *, actor_ref: str = "local_web") -> dict[str, object]:
+        try:
+            return self._research_entry().status(task_id, source="web", actor_ref=actor_ref)
+        except ResearchEntryError as exc:
+            raise WebAgentError(str(exc)) from exc
+
+    def provide_research_input(
+        self,
+        task_id: str,
+        step_id: str,
+        payload: dict[str, object],
+        *,
+        actor_ref: str = "local_web",
+    ) -> dict[str, object]:
+        self._require_research_input(actor_ref)
+        try:
+            return self._research_entry().provide_input(
+                task_id,
+                step_id,
+                payload,
+                source="web",
+                actor_ref=actor_ref,
+            )
+        except ResearchEntryError as exc:
+            raise WebAgentError(str(exc)) from exc
+
+    def control_research(
+        self,
+        task_id: str,
+        action: str,
+        *,
+        actor_ref: str = "local_web",
+    ) -> dict[str, object]:
+        self._require_research_input(actor_ref)
+        try:
+            return self._research_entry().control(
+                task_id,
+                action,
+                source="web",
+                actor_ref=actor_ref,
+            )
+        except ResearchEntryError as exc:
+            raise WebAgentError(str(exc)) from exc
+
+    def research_report(
+        self,
+        task_id: str,
+        report_id: str | None = None,
+        *,
+        actor_ref: str = "local_web",
+    ) -> dict[str, object]:
+        try:
+            return self._research_entry().report(
+                task_id,
+                report_id,
+                source="web",
+                actor_ref=actor_ref,
+            )
+        except ResearchEntryError as exc:
+            raise WebAgentError(str(exc)) from exc
 
     def plan(self, text: str, *, actor_ref: str = "local_web") -> dict[str, object]:
         raw_text = text.strip()
@@ -312,6 +399,16 @@ class WebAgentService:
             }
         finally:
             connection.close()
+
+    def _require_research_input(self, actor_ref: str) -> None:
+        decision = self._check_input(actor_ref)
+        if not decision["allowed"]:
+            raise WebAgentError(str(decision["message"]))
+
+    def _research_entry(self) -> ResearchEntryAdapter:
+        if self.research_entry is None:
+            raise WebAgentError("V2 AgentService is not configured for this Web entry point")
+        return self.research_entry
 
     def _input_gate(self, connection) -> InputGate:
         return InputGate.from_config(

@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=8,<9
+# Reproducible lockfile and environment management used by the project README.
+uv>=0.6,<1

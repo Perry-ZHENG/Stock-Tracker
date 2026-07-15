@@ -10,7 +10,17 @@ from typing import Literal, TextIO
 from stock_agent.config_loader import RuntimeConfigContext, load_config
 from stock_agent.query import QueryService
 
-CliQuery = Literal["signals", "health", "config-changes", "news", "stats", "schedule", "bars"]
+CliQuery = Literal[
+    "signals",
+    "health",
+    "config-changes",
+    "news",
+    "stats",
+    "schedule",
+    "bars",
+    "agent-trace",
+    "budget",
+]
 
 
 def run_cli_query(
@@ -25,6 +35,7 @@ def run_cli_query(
     schedule_date: date | None = None,
     from_value: str | None = None,
     to_value: str | None = None,
+    target_id: str | None = None,
 ) -> int:
     output = stream or sys.stdout
     if query is None:
@@ -42,6 +53,7 @@ def run_cli_query(
         schedule_date=schedule_date,
         from_value=from_value,
         to_value=to_value,
+        target_id=target_id,
     )
     output.write(result.text)
     output.flush()

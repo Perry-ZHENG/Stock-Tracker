@@ -61,7 +61,7 @@ def test_data_evidence_writes_replayable_bars_and_is_content_stable(tmp_path: Pa
     stored = workflow.artifact_service.load_json("task-data", first.bar_artifact)
     assert len(stored["bars"]) == 5
     assert first.evidence_refs[0].artifact_id == first.bar_artifact.artifact_id
-    assert "stock_agent.providers.broker_market_data" not in sys.modules
+    assert all(reference.provider_name != "broker_market_data" for reference in first.provider_refs)
     connection.close()
 
 

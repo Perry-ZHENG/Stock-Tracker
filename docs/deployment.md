@@ -18,6 +18,7 @@ Set these values per machine:
 - `MARKET_DATA_API_KEY`: optional live market data key.
 - `TELEGRAM_BOT_TOKEN`: optional Telegram bot token.
 - `NEWS_API_KEY`: optional on-demand news provider key.
+- `RUN_FULL_BENCHMARK=1`: explicit opt-in for the complete offline V2 release benchmark.
 
 The CLI reads `STOCK_AGENT_WORKDIR` and falls back to the current working
 directory when it is not set. `stock-agent init-config` and CLI config approval
@@ -111,6 +112,8 @@ After starting the worker:
 stock-agent health
 stock-agent cli signals --limit 5
 ```
+
+For V2 release gates, also run the offline benchmark and safety integration checks documented in `docs/v2_operations.md`; they must not require live credentials.
 
 If Telegram or live data keys are not configured, the system should still run in
 demo/local mode and report optional channels as disabled or unavailable rather

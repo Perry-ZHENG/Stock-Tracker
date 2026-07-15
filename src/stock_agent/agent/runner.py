@@ -1,4 +1,4 @@
-"""Model-agnostic ReAct loop for selecting and invoking registered tools."""
+"""Legacy read-only ReAct loop retained as a V2 migration bridge."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from stock_agent.agent.tools import AgentToolContext, AgentToolRegistry
 from stock_agent.dialog.time_window import explicit_market_time_question
 
 ModelClient = Callable[[str], str]
+LEGACY_REACT_RUNNER_STATUS = "bridge_v2_read_only_deprecated"
 AgentRunStatus = Literal[
     "succeeded",
     "needs_user_input",
@@ -301,6 +302,7 @@ def _missing_market_time_fields(arguments: dict[str, Any]) -> list[str]:
 
 
 __all__ = [
+    "LEGACY_REACT_RUNNER_STATUS",
     "AgentRunStatus",
     "AgentToolCall",
     "ModelClient",

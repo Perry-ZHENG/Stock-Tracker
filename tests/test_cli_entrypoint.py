@@ -34,6 +34,8 @@ class CliEntrypointTests(unittest.TestCase):
             "replay",
             "deploy-validate",
             "retention",
+            "mcp-server",
+            "research",
         }
         skeleton_commands = [
             command

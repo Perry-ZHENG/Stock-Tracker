@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from datetime import UTC, datetime
 
 from pydantic import Field
@@ -12,6 +13,7 @@ from stock_agent.artifacts.service import ArtifactService
 from stock_agent.contracts.common import StrictSchema
 from stock_agent.contracts.tasks import ToolError, ToolRequest, ToolResult
 from stock_agent.dialog.input_gate import InputGate
+from stock_agent.observability import AgentTrace, AgentTraceRecorder, BudgetExceeded, BudgetLedger
 from stock_agent.security.redaction import redact_sensitive, redact_text
 from stock_agent.security.research_policy import ResearchSafetyPolicy, SafetyRequest
 from stock_agent.storage.repositories import insert_trace_chain
@@ -55,6 +57,8 @@ class ToolGateway:
         self.artifact_service = artifact_service
         self.max_result_bytes = max_result_bytes
         self.safety_policy = safety_policy or ResearchSafetyPolicy(connection)
+        self.budget_ledger = BudgetLedger(connection) if connection is not None else None
+        self.trace_recorder = AgentTraceRecorder(connection) if connection is not None else None
 
     def execute(
         self,
@@ -122,6 +126,13 @@ class ToolGateway:
             next_budget = context.execution.budget.consume()
         except ToolBudgetExhausted:
             return self._complete(request, context, _rejected("budget_exhausted", "tool-call budget is exhausted"))
+        # Legacy read-only callers may not have an AgentTask yet.  They retain
+        # their local budget; official V2 tasks use the durable task ledger.
+        if self.budget_ledger is not None and self.budget_ledger.repository.get_task(request.task_id) is not None:
+            try:
+                self.budget_ledger.consume(request.task_id, tool_calls=1, now=active_now)
+            except BudgetExceeded:
+                return self._complete(request, context, _rejected("budget_exhausted", "task tool-call budget is exhausted"))
 
         call_context = ToolRuntimeContext(
             execution=context.execution.model_copy(update={"budget": next_budget}),
@@ -129,6 +140,7 @@ class ToolGateway:
             config_context=context.config_context,
             deadline_at=request.deadline_at,
         )
+        started = time.monotonic()
         try:
             response = adapter.invoke(call_context, arguments)
         except ToolAdapterTimeout as exc:
@@ -136,18 +148,21 @@ class ToolGateway:
                 request,
                 call_context,
                 _failure("timed_out", "tool_timeout", redact_text(str(exc)) or "tool timed out"),
+                duration_ms=round((time.monotonic() - started) * 1000),
             )
         except ToolAdapterError as exc:
             return self._complete(
                 request,
                 call_context,
                 _failure("failed", "tool_failed", redact_text(str(exc)) or "tool failed"),
+                duration_ms=round((time.monotonic() - started) * 1000),
             )
         except Exception as exc:  # pragma: no cover - last-resort adapter isolation
             return self._complete(
                 request,
                 call_context,
                 _failure("failed", "tool_unexpected_error", redact_text(str(exc)) or "tool failed"),
+                duration_ms=round((time.monotonic() - started) * 1000),
             )
 
         if response.untrusted:
@@ -205,7 +220,12 @@ class ToolGateway:
             evidence_refs=response.evidence_refs,
             artifact_refs=artifact_refs,
         )
-        return self._complete(request, call_context, result)
+        return self._complete(
+            request,
+            call_context,
+            result,
+            duration_ms=round((time.monotonic() - started) * 1000),
+        )
 
     def _check_input_gate(self, context: ToolRuntimeContext) -> ToolResult | None:
         source = context.execution.entry_source
@@ -231,11 +251,12 @@ class ToolGateway:
         result: ToolResult,
         *,
         audit_id: str | None = None,
+        duration_ms: int = 0,
     ) -> ToolExecutionResult:
         # Rejected calls do not reach an adapter, but must still retain the
         # request's stable id for audit and idempotency handling.
         result = result.model_copy(update={"call_id": request.call_id})
-        trace_id = self._record_trace(request, context, result, audit_id=audit_id)
+        trace_id = self._record_trace(request, context, result, audit_id=audit_id, duration_ms=duration_ms)
         return ToolExecutionResult(result=result, budget=context.execution.budget, trace_id=trace_id)
 
     def _record_trace(
@@ -245,6 +266,7 @@ class ToolGateway:
         result: ToolResult,
         *,
         audit_id: str | None,
+        duration_ms: int,
     ) -> str | None:
         if self.connection is None:
             return None
@@ -268,6 +290,35 @@ class ToolGateway:
             error_msg=result.error.message if result.error is not None else None,
         )
         insert_trace_chain(self.connection, trace)
+        if (
+            self.trace_recorder is not None
+            and self.budget_ledger is not None
+            and self.budget_ledger.repository.get_task(request.task_id) is not None
+        ):
+            descriptor = self.registry.get(request.tool_name)
+            source = descriptor.descriptor.source if descriptor is not None else "local"
+            self.trace_recorder.record(
+                AgentTrace(
+                    trace_id=f"trace-v2-tool-{request.call_id}",
+                    task_id=request.task_id,
+                    component="mcp" if source == "mcp" else "tool",
+                    status="success" if result.status == "succeeded" else "failed",
+                    duration_ms=duration_ms,
+                    input_ref={
+                        "tool_name": request.tool_name,
+                        "caller": request.caller,
+                        "argument_keys": sorted(request.arguments),
+                    },
+                    output_ref={
+                        "status": result.status,
+                        "artifact_ids": [artifact.artifact_id for artifact in result.artifact_refs],
+                        "evidence_ids": [evidence.evidence_id for evidence in result.evidence_refs],
+                        "audit_id": audit_id,
+                    },
+                    error_message=result.error.message if result.error is not None else None,
+                    created_at=_utc_now(None),
+                )
+            )
         return trace_id
 
 

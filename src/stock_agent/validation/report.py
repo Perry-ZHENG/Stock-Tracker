@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Protocol
+from uuid import uuid4
 
 from stock_agent.contracts.evidence import EvidenceBundle
 from stock_agent.contracts.reports import FinalReport, ReportClaim, ReportDraft, ReportValidationResult
+from stock_agent.observability import AgentTrace, AgentTraceRecorder
+from stock_agent.security.research_policy import ResearchSafetyPolicy, SafetyRequest
 from stock_agent.validation.claims import ClaimValidator
 
 
@@ -21,9 +24,16 @@ class ReportValidationError(ValueError):
 
 
 class ReportValidator:
-    def __init__(self, claim_validator: ClaimValidator, *, semantic_reviewer: SemanticReviewer | None = None) -> None:
+    def __init__(
+        self,
+        claim_validator: ClaimValidator,
+        *,
+        semantic_reviewer: SemanticReviewer | None = None,
+        safety_policy: ResearchSafetyPolicy | None = None,
+    ) -> None:
         self.claim_validator = claim_validator
         self.semantic_reviewer = semantic_reviewer
+        self.safety_policy = safety_policy or claim_validator.safety_policy
 
     def validate(
         self,
@@ -86,11 +96,41 @@ class ReportValidator:
         active_published = published_at or datetime.now(UTC)
         if active_published.tzinfo is None:
             raise ReportValidationError("published_at must be timezone-aware")
+        safety = self.safety_policy.inspect(
+            SafetyRequest(
+                source="report_validator",
+                actor_type="system",
+                requested_capability="write_report",
+                raw_text="\n".join(
+                    [draft.summary, *draft.limitations, *(section.content for section in draft.sections)]
+                ),
+            )
+        )
+        if not safety.allowed:
+            self._record_safety_block(draft, safety.reason_code, safety.audit_id, active_published)
+            raise ReportValidationError(f"report finalisation is blocked: {safety.reason_code}")
         return FinalReport(
             report_id=report_id,
             draft=draft,
             validation=validation,
             published_at=active_published,
+        )
+
+    def _record_safety_block(self, draft: ReportDraft, reason_code: str, audit_id: str | None, now: datetime) -> None:
+        if self.safety_policy.connection is None:
+            return
+        AgentTraceRecorder(self.safety_policy.connection).record(
+            AgentTrace(
+                trace_id=f"trace-safety-{draft.task_id}-{uuid4().hex}",
+                task_id=draft.task_id,
+                component="report",
+                status="failed",
+                error_category="safety",
+                input_ref={"boundary": "report_validator", "draft_id": draft.draft_id},
+                output_ref={"audit_id": audit_id, "reason_code": reason_code},
+                error_message=reason_code,
+                created_at=now,
+            )
         )
 
 

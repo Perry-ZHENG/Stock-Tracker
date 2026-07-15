@@ -218,6 +218,25 @@ flowchart TD
 - 行情抓取由确定性的 Worker 和 Provider 脚本执行，不由 Agent 自主抓取。
 - 当前默认行情源是 Twelve Data，失败后回退 CSV Demo。
 - Alpha Vantage 代码存在，但当前配置链没有启用。
+
+## 6. V2 研究主链
+
+```mermaid
+flowchart LR
+    I[CLI / Web / Telegram] --> E[ResearchEntryAdapter]
+    E --> S[AgentService]
+    S --> O[Orchestrator / Durable Plan]
+    O --> R[Role-isolated AgentRuntime]
+    R --> T[Tool Gateway / Read-only MCP]
+    R --> X[Signal Sandbox / Validation / Human Approval]
+    T --> A[Evidence + Artifact Store]
+    X --> A
+    A --> P[Report Agent / Claim Validator / FinalReport]
+    S -.budget and trace.-> H[AgentTrace / Health / BudgetLedger]
+    P -.report trace.-> H
+```
+
+V2 is a research-only path. The legacy Worker/Strategy chain above remains a compatibility/hybrid path until the migration manifest has no importers or runtime hits for its bridge modules.
 - Web 后端路由已经存在，但 CLI 的 `stock-agent web` 启动命令尚未注册。
 - `web/templates` 和 `web/static` 当前为空，Web 首页尚未完成。
 - `poll_interval_sec` 尚未接入 Worker 的实际循环间隔。

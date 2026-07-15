@@ -27,7 +27,7 @@ def test_empty_database_applies_all_migrations_idempotently(tmp_path: Path) -> N
     second = applied_migrations(second_connection)
     second_connection.close()
 
-    assert [row["version"] for row in first] == [1, 2, 3]
+    assert [row["version"] for row in first] == [1, 2, 3, 4, 5, 6, 7]
     assert first == second
     assert set(REQUIRED_TABLES).issubset(table_names)
 
@@ -62,7 +62,7 @@ def test_legacy_database_is_upgraded_without_losing_existing_signal_rows(tmp_pat
     connection.close()
 
     assert count == 1
-    assert [row["version"] for row in migrations] == [1, 2, 3]
+    assert [row["version"] for row in migrations] == [1, 2, 3, 4, 5, 6, 7]
 
 
 def test_changed_applied_migration_checksum_is_rejected(tmp_path: Path) -> None:
