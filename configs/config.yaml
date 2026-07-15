@@ -10,6 +10,7 @@ provider:
     enabled: true
     order:
       - csv_demo
+      - synthetic_demo
   csv_demo:
     path: data/sample/sample_bars.csv
   live:
@@ -21,7 +22,7 @@ provider:
     source_interval: 1min
     poll_interval_sec: 60
     request_timeout_sec: 15
-    max_retries: 3
+    max_retries: 0
     credit_budget_per_minute: 8
 symbols:
   default:
@@ -87,12 +88,12 @@ news:
   cache_ttl_minutes: 30
 llm:
   enabled: true
-  provider: openrouter
-  model: qwen/qwen3-next-80b-a3b-instruct:free
-  fallback_model: openrouter/free
-  api_key_env: OPENROUTER_API_KEY
-  base_url: https://openrouter.ai/api/v1
-  request_timeout_sec: 45
+  provider: gemini
+  model: gemini-3.5-flash
+  fallback_model: null
+  api_key_env: GEMINI_API_KEY
+  base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+  request_timeout_sec: 60
   max_retries: 0
 storage:
   sqlite_path: data/runtime/stock_agent.sqlite

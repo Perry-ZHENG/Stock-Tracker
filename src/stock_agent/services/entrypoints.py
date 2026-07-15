@@ -98,7 +98,12 @@ class ResearchEntryAdapter:
     ) -> dict[str, object]:
         with self.service.lock:
             self._authorize(source=source, actor_ref=actor_ref, actor_type=actor_type)
-            operations = {"pause": self.service.pause, "resume": self.service.resume, "cancel": self.service.cancel}
+            operations = {
+                "pause": self.service.pause,
+                "resume": self.service.resume,
+                "cancel": self.service.cancel,
+                "retry-report": self.service.retry_report_after_validation,
+            }
             if action not in operations:
                 raise ResearchEntryError("unsupported research control action")
             try:

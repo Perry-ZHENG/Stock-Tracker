@@ -41,4 +41,4 @@ class MarketDataProvider(ABC):
         return {"provider": self.__class__.__name__, "status": "healthy"}
 
 
-ProviderName = Literal["csv_demo", "alpha_vantage"]
+ProviderName = Literal["csv_demo", "synthetic_demo", "alpha_vantage"]

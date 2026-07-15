@@ -115,6 +115,47 @@ def test_task_repository_rejects_invalid_state_and_cross_task_evidence(tmp_path:
     connection.close()
 
 
+def test_task_repository_scopes_reused_step_ids_and_payloads_to_each_task(tmp_path: Path) -> None:
+    connection = initialize_database(tmp_path / "runtime.sqlite")
+    repository = TaskRepository(connection)
+    first = _task("task-scoped-first")
+    second = _task("task-scoped-second")
+    for task, plan_id, artifact_id in (
+        (first, "plan-scoped-first", "artifact-scoped-first"),
+        (second, "plan-scoped-second", "artifact-scoped-second"),
+    ):
+        repository.create_task(task)
+        repository.transition_task(task.task_id, expected_status="pending", new_status="running", updated_at=NOW)
+        repository.save_plan(
+            AgentPlan(
+                plan_id=plan_id,
+                task_id=task.task_id,
+                reason="one reusable data step per task",
+                steps=[AgentStep(step_id="step-data", actor="orchestrator")],
+            ),
+            created_at=NOW,
+        )
+        artifact = _artifact(artifact_id, "bars")
+        repository.register_artifact(task.task_id, artifact, storage_key=f"artifacts/{artifact_id}.json")
+        claimed = repository.claim_next_step(task.task_id, worker_id=task.task_id, claimed_at=NOW)
+        assert claimed is not None
+        repository.save_step_input(task.task_id, "step-data", {"task_id": task.task_id}, updated_at=NOW)
+        repository.record_step_output(task.task_id, "step-data", artifact_id=artifact.artifact_id, updated_at=NOW)
+        repository.complete_step(
+            "step-data",
+            task_id=task.task_id,
+            expected_status="running",
+            new_status="succeeded",
+            updated_at=NOW,
+        )
+
+    assert repository.get_step_input(first.task_id, "step-data") == {"task_id": first.task_id}
+    assert repository.get_step_input(second.task_id, "step-data") == {"task_id": second.task_id}
+    assert repository.get_step_output_artifact_id(first.task_id, "step-data") == "artifact-scoped-first"
+    assert repository.get_step_output_artifact_id(second.task_id, "step-data") == "artifact-scoped-second"
+    connection.close()
+
+
 def test_signal_and_report_repositories_round_trip_with_foreign_keys(tmp_path: Path) -> None:
     connection = initialize_database(tmp_path / "runtime.sqlite")
     task_repository = TaskRepository(connection)

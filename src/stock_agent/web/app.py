@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -30,6 +31,7 @@ from stock_agent.storage.repositories import (
 )
 from stock_agent.storage.sqlite import open_database
 from stock_agent.web.agent_service import WebAgentError, WebAgentService
+from stock_agent.services.production_v2 import ProductionV2Components, build_production_v2
 
 if TYPE_CHECKING:
     from stock_agent.services.agent_service import AgentService
@@ -59,6 +61,19 @@ def create_app(
 ) -> FastAPI:
     resolved_root = root.resolve()
     context = config_context or load_config(resolved_root)
+    owned_v2_components: ProductionV2Components | None = None
+    if v2_agent_service is None:
+        owned_v2_components = build_production_v2(resolved_root, config_context=context)
+        v2_agent_service = owned_v2_components.service
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        try:
+            yield
+        finally:
+            if owned_v2_components is not None:
+                owned_v2_components.close()
+
     templates = Jinja2Templates(directory=str(WEB_ROOT / "templates"))
     agent_service = WebAgentService(
         resolved_root,
@@ -72,10 +87,12 @@ def create_app(
         version="0.1.0",
         docs_url="/api/docs",
         redoc_url=None,
+        lifespan=lifespan,
     )
     app.state.root = resolved_root
     app.state.config_context = context
     app.state.agent_service = agent_service
+    app.state.v2_components = owned_v2_components
     # The current workbench embeds its UI styles; keep the static route optional
     # so an API-only deployment does not fail when no assets are packaged.
     app.mount(
@@ -189,6 +206,7 @@ def create_app(
     @app.post("/api/v2/research/{task_id}/pause")
     @app.post("/api/v2/research/{task_id}/resume")
     @app.post("/api/v2/research/{task_id}/cancel")
+    @app.post("/api/v2/research/{task_id}/retry-report")
     def control_research(task_id: str, request: Request):
         action = request.url.path.rsplit("/", 1)[-1]
         try:

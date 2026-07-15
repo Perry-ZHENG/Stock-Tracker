@@ -66,6 +66,10 @@ def test_v2_api_submits_controls_streams_and_renders_one_task(tmp_path: Path) ->
         assert resumed.status_code == 200
         assert resumed.json()["task"]["status"] == "running"
 
+        report_retry = client.post(f"/api/v2/research/{task_id}/retry-report")
+        assert report_retry.status_code == 409
+        assert "completed initial report step" in report_retry.json()["detail"]
+
         event = client.get(f"/api/v2/research/{task_id}/events?once=true")
         assert event.status_code == 200
         assert "event: research_status" in event.text

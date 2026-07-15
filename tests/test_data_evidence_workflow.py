@@ -84,6 +84,44 @@ def test_data_evidence_reports_csv_fallback_and_quality_degradation(tmp_path: Pa
     connection.close()
 
 
+def test_data_evidence_falls_back_after_an_empty_primary_result(tmp_path: Path) -> None:
+    connection = _connection_with_task(tmp_path)
+    workflow = _workflow(tmp_path, connection, primary=[], fallback=_bars())
+
+    result = workflow.collect("task-data", _request(), now=NOW)
+
+    assert isinstance(result, DataEvidence)
+    assert result.provider_refs[0].provider_name == "csv_demo"
+    assert result.provider_refs[0].fallback_used is True
+    connection.close()
+
+
+def test_synthetic_demo_data_is_degraded_and_rejected_for_current_requests(tmp_path: Path) -> None:
+    connection = _connection_with_task(tmp_path)
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["provider"]["default"] = "synthetic_demo"
+    config["provider"]["priority"] = ["synthetic_demo"]
+    config["provider"]["fallback"] = {"enabled": False, "order": []}
+    registry = ProviderRegistry(
+        root=tmp_path,
+        config=validate_config(config),
+        connection=connection,
+        allowed_provider_names=V2_READ_ONLY_PROVIDER_NAMES,
+    )
+    workflow = DataEvidenceWorkflow(root=tmp_path, connection=connection, provider_registry=registry)
+
+    historical = workflow.collect("task-data", _request().model_copy(update={"freshness_seconds": 0}), now=NOW)
+    current = workflow.collect("task-data", _request(), now=NOW)
+
+    assert isinstance(historical, DataEvidence)
+    assert historical.provider_refs[0].provider_name == "synthetic_demo"
+    assert historical.quality.status == "degraded"
+    assert "synthetic_demo_data" in historical.quality.flags
+    assert isinstance(current, DataEvidenceFailure)
+    assert current.code == "provider_failed"
+    connection.close()
+
+
 def test_data_evidence_quarantines_invalid_and_gap_bars_without_hiding_degradation(tmp_path: Path) -> None:
     connection = _connection_with_task(tmp_path)
     malformed = _bar(datetime(2026, 5, 22, 14, 0, tzinfo=UTC), high=99, low=100)
@@ -139,6 +177,36 @@ def test_data_evidence_returns_controlled_failures_for_closed_or_empty_windows(t
 
     assert isinstance(closed, DataEvidenceFailure) and closed.code == "market_closed"
     assert isinstance(empty, DataEvidenceFailure) and empty.code == "empty_result"
+    connection.close()
+
+
+def test_data_evidence_does_not_mark_provider_credit_exhaustion_as_retryable(tmp_path: Path) -> None:
+    connection = _connection_with_task(tmp_path)
+    workflow = _workflow(
+        tmp_path,
+        connection,
+        primary=[],
+        primary_error="Twelve Data minute credit budget exhausted",
+    )
+
+    result = workflow.collect("task-data", _request(), now=NOW)
+
+    assert isinstance(result, DataEvidenceFailure)
+    assert result.code == "provider_failed"
+    assert result.retryable is False
+    connection.close()
+
+
+def test_historical_data_evidence_remains_reusable_after_live_freshness_would_expire(tmp_path: Path) -> None:
+    connection = _connection_with_task(tmp_path)
+    workflow = _workflow(tmp_path, connection, primary=_bars())
+    historical_request = _request().model_copy(update={"freshness_seconds": 0})
+
+    result = workflow.collect("task-data", historical_request, now=NOW + timedelta(days=2))
+
+    assert isinstance(result, DataEvidence)
+    assert "stale_data" not in result.quality.flags
+    assert all(reference.valid_until is None for reference in result.evidence_refs)
     connection.close()
 
 

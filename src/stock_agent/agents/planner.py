@@ -101,6 +101,26 @@ class AgentPlanner:
             reason=f"supplement only requested evidence for {gap.requester}: {gap.reason}",
         )
 
+    def retry_report_after_validation(self, task: AgentTask, *, previous_revision: int) -> AgentPlan:
+        """Retry only report wording after a deterministic validation rejection."""
+
+        # Formatting-only report retries do not collect new evidence or invoke
+        # tools, so allow one final bounded retry beyond evidence replanning.
+        if previous_revision > self.policy.max_replans + 1:
+            raise PlanningError("replan budget is exhausted")
+        revision = previous_revision + 1
+        report_step_id = f"step-report-retry-r{revision}"
+        return AgentPlan(
+            plan_id=f"plan-{task.task_id}-r{revision}",
+            task_id=task.task_id,
+            steps=[
+                _step(report_step_id, "report"),
+                _step(f"step-validator-retry-r{revision}", "orchestrator", depends_on=[report_step_id], input_refs=["validator:report"]),
+            ],
+            revision=revision,
+            reason="retry report wording after deterministic validation rejection without recollecting evidence",
+        )
+
 
 def _base_evidence_steps(policy: OrchestrationPolicy) -> list[AgentStep]:
     return [

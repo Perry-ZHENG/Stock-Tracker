@@ -56,6 +56,17 @@ def test_one_shot_cli_and_interactive_cli_share_the_same_task(tmp_path: Path, ca
     assert "status=cancelled" in output.getvalue()
 
 
+def test_default_cli_composes_v2_service_instead_of_returning_an_unavailable_placeholder(tmp_path: Path, capsys) -> None:
+    request_json = json.dumps(_request().model_dump(mode="json"))
+
+    with patch("pathlib.Path.cwd", return_value=tmp_path):
+        assert main(["research", "submit", "--request-json", request_json]) == 0
+
+    output = capsys.readouterr().out
+    assert "research_action=submitted" in output
+    assert "V2 AgentService is not configured" not in output
+
+
 def _service(root: Path) -> tuple[object, AgentService]:
     connection = initialize_runtime_database(root)
     repository = TaskRepository(connection)

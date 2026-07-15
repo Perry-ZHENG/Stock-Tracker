@@ -213,7 +213,7 @@ class NaturalLanguageInteractionTests(unittest.TestCase):
             },
         )
 
-    def test_langchain_adapter_falls_back_after_rate_limit(self) -> None:
+    def test_langchain_adapter_does_not_fallback_after_rate_limit(self) -> None:
         config = validate_config(DEFAULT_CONFIG).llm
 
         class RateLimited(Exception):
@@ -221,6 +221,31 @@ class NaturalLanguageInteractionTests(unittest.TestCase):
 
         primary = SimpleNamespace(
             invoke=lambda _prompt: (_ for _ in ()).throw(RateLimited("429"))
+        )
+        fallback = SimpleNamespace(
+            invoke=lambda _prompt: SimpleNamespace(content="fallback response")
+        )
+        with patch(
+            "langchain_openai.ChatOpenAI",
+            side_effect=[primary, fallback],
+        ):
+            client = build_langchain_client(
+                config,
+                environ={"OPENROUTER_API_KEY": "test-key"},
+            )
+
+        self.assertIsNotNone(client)
+        with self.assertRaises(RateLimited):
+            client("hello")
+
+    def test_langchain_adapter_falls_back_after_temporary_provider_failure(self) -> None:
+        config = validate_config(DEFAULT_CONFIG).llm
+
+        class TemporarilyUnavailable(Exception):
+            status_code = 503
+
+        primary = SimpleNamespace(
+            invoke=lambda _prompt: (_ for _ in ()).throw(TemporarilyUnavailable("503"))
         )
         fallback = SimpleNamespace(
             invoke=lambda _prompt: SimpleNamespace(content="fallback response")

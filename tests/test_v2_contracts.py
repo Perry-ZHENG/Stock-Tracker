@@ -137,6 +137,7 @@ def test_all_public_contracts_round_trip() -> None:
         constraints=ResearchConstraints(allow_mcp=True),
     )
     task = AgentTask(task_id="task-1", request=request, budget=ExecutionBudget(), created_at=NOW, updated_at=NOW)
+    assert task.budget.max_model_calls == 4
     first_step = AgentStep(step_id="step-data", actor="orchestrator")
     second_step = AgentStep(step_id="step-report", actor="report", depends_on=["step-data"])
     plan = AgentPlan(plan_id="plan-1", task_id=task.task_id, steps=[first_step, second_step], reason="Collect evidence first.")

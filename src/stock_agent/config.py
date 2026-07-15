@@ -36,7 +36,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "source_interval": "1min",
             "poll_interval_sec": 60,
             "request_timeout_sec": 15,
-            "max_retries": 3,
+            # A rate-limited data provider must not multiply one failed task
+            # into several paid requests. Failures become durable evidence gaps.
+            "max_retries": 0,
             "credit_budget_per_minute": 8,
         },
     },
@@ -161,7 +163,7 @@ class TwelveDataProviderConfig(BaseModel):
     source_interval: str = "1min"
     poll_interval_sec: int = Field(default=60, ge=15)
     request_timeout_sec: int = Field(default=15, gt=0, le=120)
-    max_retries: int = Field(default=3, ge=0, le=10)
+    max_retries: int = Field(default=0, ge=0, le=10)
     credit_budget_per_minute: int = Field(default=8, gt=0)
 
 

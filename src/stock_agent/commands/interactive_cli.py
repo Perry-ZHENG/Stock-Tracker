@@ -47,7 +47,9 @@ def run_interactive_cli(
     output = output_stream or sys.stdout
     config_context = config_context or load_config(root)
     langchain_client = build_langchain_client(config_context.config.llm)
-    llm_parser = llm_parser or LlmParser(enabled=langchain_client is not None, client=langchain_client)
+    # A supplied chat client is commonly an offline/test dependency. Do not
+    # issue a separate model request merely to parse its conversational input.
+    llm_parser = llm_parser or LlmParser(enabled=chat_client is None and langchain_client is not None, client=langchain_client)
     chat_client = chat_client or langchain_client
     output.write("stock-agent interactive cli\n")
     output.write("type 'exit' or 'quit' to leave\n")

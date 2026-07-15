@@ -28,20 +28,51 @@ class SingleInstanceLock:
 
     def acquire(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        for attempt in range(2):
+            try:
+                self._fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(
+                    self._fd,
+                    (
+                        f"pid={os.getpid()}\n"
+                        f"host_id={self.identity.host_id}\n"
+                        f"instance_id={self.identity.instance_id}\n"
+                        f"lock_owner={self.identity.lock_owner()}\n"
+                        f"multi_instance_enabled={str(self.identity.multi_instance_enabled).lower()}\n"
+                    ).encode("utf-8"),
+                )
+                return
+            except FileExistsError as exc:
+                if attempt == 0 and self._remove_stale_local_lock():
+                    continue
+                raise SingleInstanceLockError(f"worker lock already exists: {self.path}") from exc
+
+    def _remove_stale_local_lock(self) -> bool:
+        """Reclaim only a lock whose recorded process is gone on this host.
+
+        Locks from another host, malformed locks, and locks owned by a live PID
+        remain protected. This makes an interrupted local Worker restartable
+        without weakening the single-instance guarantee.
+        """
+
         try:
-            self._fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(
-                self._fd,
-                (
-                    f"pid={os.getpid()}\n"
-                    f"host_id={self.identity.host_id}\n"
-                    f"instance_id={self.identity.instance_id}\n"
-                    f"lock_owner={self.identity.lock_owner()}\n"
-                    f"multi_instance_enabled={str(self.identity.multi_instance_enabled).lower()}\n"
-                ).encode("utf-8"),
-            )
-        except FileExistsError as exc:
-            raise SingleInstanceLockError(f"worker lock already exists: {self.path}") from exc
+            metadata = _read_lock_metadata(self.path)
+            pid = int(metadata["pid"])
+        except (FileNotFoundError, KeyError, ValueError, OSError):
+            return False
+        if metadata.get("host_id") != self.identity.host_id or pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
+            return True
+        except (PermissionError, OSError):
+            return False
+        return False
 
     def release(self) -> None:
         if self._fd is not None:
@@ -58,6 +89,15 @@ class SingleInstanceLock:
 
     def __exit__(self, _exc_type, _exc, _traceback) -> None:
         self.release()
+
+
+def _read_lock_metadata(path: Path) -> dict[str, str]:
+    return {
+        key: value
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+        for key, value in [line.split("=", 1)]
+    }
 
 
 @dataclass(frozen=True)
@@ -147,7 +187,10 @@ class Worker:
 
     def tick(self) -> WorkerTickSummary:
         if self.pipeline is not None:
-            return self.pipeline.run_once()
+            summary = self.pipeline.run_once()
+            if summary.status == "research_only":
+                self._record_research_only_health(summary)
+            return summary
 
         now = utc_now()
         record_health_metric(
@@ -172,6 +215,29 @@ class Worker:
             thresholds=self.thresholds,
         )
         return WorkerTickSummary(status="heartbeat", trading_day=True)
+
+    def _record_research_only_health(self, summary: WorkerTickSummary) -> None:
+        """Keep V2-only workers observable without invoking the legacy pipeline."""
+
+        record_health_metric(
+            self.connection,
+            module="worker",
+            data_latency_sec=0,
+            error_rate=0 if not summary.errors else 1,
+            consecutive_failures=0 if not summary.errors else 1,
+            alert_failures=0,
+            core_module_running=True,
+            details={
+                "pipeline": "v2_research",
+                "tick_status": summary.status,
+                "provider": summary.provider,
+                "instance_id": self.identity.instance_id,
+                "host_id": self.identity.host_id,
+                "lock_owner": self.identity.lock_owner(),
+                "multi_instance_enabled": self.identity.multi_instance_enabled,
+            },
+            thresholds=self.thresholds,
+        )
 
     def recover_from_crash(self) -> list[str]:
         state = self.recovery_manager.state()

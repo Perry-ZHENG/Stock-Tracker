@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import time
 import urllib.parse
 import urllib.request
+from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -20,6 +22,7 @@ from stock_agent.security import redact_sensitive
 
 TwelveDataHttpGet = Callable[[str, dict[str, str], float], dict[str, Any]]
 SleepFn = Callable[[float], None]
+ClockFn = Callable[[], float]
 
 
 class TwelveDataProviderError(RuntimeError):
@@ -35,10 +38,11 @@ class TwelveDataProvider(MarketDataProvider):
         api_key: str,
         base_url: str = "https://api.twelvedata.com",
         request_timeout_sec: float = 15,
-        max_retries: int = 3,
+        max_retries: int = 0,
         credit_budget_per_minute: int = 8,
         http_get: TwelveDataHttpGet | None = None,
         sleep_fn: SleepFn = time.sleep,
+        clock_fn: ClockFn = time.monotonic,
     ) -> None:
         if not api_key:
             raise TwelveDataProviderError("Twelve Data API key is required")
@@ -49,6 +53,8 @@ class TwelveDataProvider(MarketDataProvider):
         self.credit_budget_per_minute = credit_budget_per_minute
         self.http_get = http_get or _urllib_get_json
         self.sleep_fn = sleep_fn
+        self.clock_fn = clock_fn
+        self._credit_timestamps: deque[float] = deque()
         self.request_count = 0
         self.retry_count = 0
         self.last_error: str | None = None
@@ -61,10 +67,11 @@ class TwelveDataProvider(MarketDataProvider):
         api_key_env: str,
         base_url: str = "https://api.twelvedata.com",
         request_timeout_sec: float = 15,
-        max_retries: int = 3,
+        max_retries: int = 0,
         credit_budget_per_minute: int = 8,
         http_get: TwelveDataHttpGet | None = None,
         sleep_fn: SleepFn = time.sleep,
+        clock_fn: ClockFn = time.monotonic,
     ) -> "TwelveDataProvider":
         api_key = os.getenv(api_key_env)
         if not api_key:
@@ -77,6 +84,7 @@ class TwelveDataProvider(MarketDataProvider):
             credit_budget_per_minute=credit_budget_per_minute,
             http_get=http_get,
             sleep_fn=sleep_fn,
+            clock_fn=clock_fn,
         )
 
     def fetch_intraday_bars(
@@ -142,6 +150,7 @@ class TwelveDataProvider(MarketDataProvider):
     def _request(self, params: dict[str, str]) -> dict[str, Any]:
         endpoint = f"{self.base_url}/time_series"
         for attempt in range(self.max_retries + 1):
+            self._reserve_request_credit()
             self.request_count += 1
             try:
                 payload = self.http_get(endpoint, params, self.request_timeout_sec)
@@ -156,6 +165,19 @@ class TwelveDataProvider(MarketDataProvider):
                 self.sleep_fn(min(8.0, 0.5 * (2**attempt)))
         raise TwelveDataProviderError("Twelve Data request exhausted retries")
 
+    def _reserve_request_credit(self) -> None:
+        """Limit direct provider use even when it bypasses ProviderRegistry."""
+
+        now = self.clock_fn()
+        cutoff = now - 60.0
+        while self._credit_timestamps and self._credit_timestamps[0] <= cutoff:
+            self._credit_timestamps.popleft()
+        if len(self._credit_timestamps) >= self.credit_budget_per_minute:
+            raise TwelveDataProviderError(
+                "Twelve Data minute credit budget exhausted; wait before another request"
+            )
+        self._credit_timestamps.append(now)
+
 
 def create_twelve_data_provider(
     *,
@@ -166,6 +188,7 @@ def create_twelve_data_provider(
     credit_budget_per_minute: int,
     http_get: TwelveDataHttpGet | None = None,
     sleep_fn: SleepFn = time.sleep,
+    clock_fn: ClockFn = time.monotonic,
 ) -> TwelveDataProvider:
     return TwelveDataProvider.from_env(
         api_key_env=api_key_env,
@@ -175,6 +198,7 @@ def create_twelve_data_provider(
         credit_budget_per_minute=credit_budget_per_minute,
         http_get=http_get,
         sleep_fn=sleep_fn,
+        clock_fn=clock_fn,
     )
 
 
@@ -287,9 +311,14 @@ def _matches_filters(
 
 
 def _urllib_get_json(url: str, params: dict[str, str], timeout: float) -> dict[str, Any]:
+    import certifi
+
     query = urllib.parse.urlencode(params)
     request = urllib.request.Request(f"{url}?{query}", headers={"User-Agent": "stock-agent/0.1"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    # macOS framework Python may not inherit the system CA bundle. Use the
+    # package-managed trust store rather than weakening TLS verification.
+    context = ssl.create_default_context(cafile=certifi.where())
+    with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

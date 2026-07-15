@@ -47,6 +47,7 @@ REQUIRED_TABLES = (
     "research_subscription_runs",
     "agent_trace_events",
     "agent_budget_snapshots",
+    "provider_credit_reservations",
 )
 
 

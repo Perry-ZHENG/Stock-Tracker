@@ -51,9 +51,10 @@ class AgentTask(StrictSchema):
     status: TaskStatus = "pending"
     budget: ExecutionBudget = Field(default_factory=ExecutionBudget)
     created_at: datetime
+    execution_started_at: datetime | None = None
     updated_at: datetime
 
-    @field_validator("created_at", "updated_at")
+    @field_validator("created_at", "execution_started_at", "updated_at")
     @classmethod
     def _normalize_datetime(cls, value: datetime) -> datetime:
         return ensure_utc(value)  # type: ignore[return-value]
@@ -62,6 +63,8 @@ class AgentTask(StrictSchema):
     def _validate_update_time(self) -> "AgentTask":
         if self.updated_at < self.created_at:
             raise ValueError("updated_at must not be earlier than created_at")
+        if self.execution_started_at is not None and self.execution_started_at < self.created_at:
+            raise ValueError("execution_started_at must not be earlier than created_at")
         return self
 
 

@@ -34,6 +34,29 @@ class WorkerIdentityTests(unittest.TestCase):
         self.assertIn("host_id=host-1", content)
         self.assertIn("lock_owner=host-1:inst-1", content)
 
+    def test_lock_recovers_a_dead_local_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            lock_path = Path(tmp_dir) / "worker.lock"
+            lock_path.write_text("pid=12345\nhost_id=host-1\n", encoding="utf-8")
+            lock = SingleInstanceLock(lock_path, identity=WorkerIdentity(instance_id="inst-2", host_id="host-1"))
+
+            with patch("stock_agent.worker.scheduler.os.kill", side_effect=ProcessLookupError):
+                lock.acquire()
+
+            content = lock_path.read_text(encoding="utf-8")
+            lock.release()
+
+        self.assertIn("instance_id=inst-2", content)
+
+    def test_lock_never_recovers_an_owner_from_another_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            lock_path = Path(tmp_dir) / "worker.lock"
+            lock_path.write_text("pid=12345\nhost_id=other-host\n", encoding="utf-8")
+            lock = SingleInstanceLock(lock_path, identity=WorkerIdentity(instance_id="inst-2", host_id="host-1"))
+
+            with self.assertRaises(SingleInstanceLockError):
+                lock.acquire()
+
     def test_build_identity_defaults_multi_instance_disabled(self) -> None:
         with patch.dict("os.environ", {"STOCK_AGENT_INSTANCE_ID": "demo-inst", "STOCK_AGENT_HOST_ID": "demo-host"}, clear=True):
             identity = build_worker_identity()
@@ -57,11 +80,25 @@ class WorkerIdentityTests(unittest.TestCase):
 
             with patch.dict("os.environ", {"STOCK_AGENT_INSTANCE_ID": "inst-a", "STOCK_AGENT_HOST_ID": "host-a"}):
                 self.assertEqual(
-                    run_worker(root, once=True, interval_sec=0.01, stream=io.StringIO(), now_fn=lambda: MARKET_OPEN_NOW),
+                    run_worker(
+                        root,
+                        once=True,
+                        interval_sec=0.01,
+                        stream=io.StringIO(),
+                        now_fn=lambda: MARKET_OPEN_NOW,
+                        include_legacy_market_watch=True,
+                    ),
                     0,
                 )
                 self.assertEqual(
-                    run_worker(root, once=True, interval_sec=0.01, stream=io.StringIO(), now_fn=lambda: MARKET_OPEN_NOW),
+                    run_worker(
+                        root,
+                        once=True,
+                        interval_sec=0.01,
+                        stream=io.StringIO(),
+                        now_fn=lambda: MARKET_OPEN_NOW,
+                        include_legacy_market_watch=True,
+                    ),
                     0,
                 )
 

@@ -32,7 +32,7 @@ class WebInputControlTests(unittest.TestCase):
         self.assertEqual(result["status"], "no_suitable_tool")
         self.assertEqual(result["selected_tool"], "no_suitable_tool")
 
-    def test_home_page_exposes_input_control_ui(self) -> None:
+    def test_home_page_exposes_research_workbench_and_input_control_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             app = create_app(Path(tmp_dir))
 
@@ -40,8 +40,11 @@ class WebInputControlTests(unittest.TestCase):
                 response = client.get("/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("输入控制", response.text)
-        self.assertIn("申请切换至 FastAPI", response.text)
+        self.assertIn("研究工作台", response.text)
+        self.assertIn('id="research-form"', response.text)
+        self.assertIn("/api/v2/research", response.text)
+        self.assertIn("require_current_data: requireCurrentData", response.text)
+        self.assertIn("申请切换至网页输入", response.text)
 
     def test_web_is_blocked_until_original_interface_approves_switch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

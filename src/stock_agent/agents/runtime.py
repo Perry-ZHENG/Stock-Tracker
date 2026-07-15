@@ -13,7 +13,7 @@ from pydantic import BaseModel, ValidationError
 
 from stock_agent.agents.registry import AgentRegistration, AgentRegistry
 from stock_agent.artifacts.service import ArtifactService
-from stock_agent.contracts.evidence import ArtifactRef
+from stock_agent.contracts.evidence import ArtifactRef, EvidenceGapRequest
 from stock_agent.contracts.tasks import AgentMessage, AgentStep, AgentTask
 from stock_agent.observability import AgentTrace, AgentTraceRecorder, BudgetExceeded, BudgetLedger
 from stock_agent.security.redaction import redact_text
@@ -67,14 +67,32 @@ class AgentRuntimeContext:
     def model_calls(self) -> int:
         return self._model_calls
 
+    @property
+    def model_available(self) -> bool:
+        """Expose provider availability without handing a handler the client itself."""
+
+        return self._model_client is not None
+
+    @property
+    def now(self) -> datetime:
+        """Return the execution timestamp used for durable step writes."""
+
+        return self._now
+
     def require_tool(self, tool_name: str) -> None:
         """Reject a tool before a handler can pass it to the shared Tool Gateway."""
 
         if tool_name not in self.registration.allowed_tools:
             raise AgentRuntimeError(f"tool is not allowed for {self.step.actor}: {tool_name}")
 
-    def call_model(self, prompt: str, output_schema: type[BaseModel]) -> BaseModel:
-        """Parse a typed model response and permit exactly one schema-repair attempt."""
+    def call_model(
+        self,
+        prompt: str,
+        output_schema: type[BaseModel],
+        *,
+        repair_schema: bool = True,
+    ) -> BaseModel:
+        """Parse a typed model response and optionally perform one schema repair."""
 
         if self._model_client is None:
             raise AgentRuntimeError("no ModelClient is configured for this Agent runtime")
@@ -86,6 +104,8 @@ class AgentRuntimeContext:
         try:
             return output_schema.model_validate_json(_extract_json(raw))
         except ValidationError as first_error:
+            if not repair_schema:
+                raise
             if self._model_calls >= self.registration.max_model_calls:
                 raise AgentRuntimeError("model response did not match the required schema") from first_error
             repair_prompt = (
@@ -99,6 +119,36 @@ class AgentRuntimeContext:
                 return output_schema.model_validate_json(_extract_json(repaired))
             except ValidationError as second_error:
                 raise AgentRuntimeError("model response did not match the required schema after repair") from second_error
+
+    def record_provider_freshness(
+        self,
+        *,
+        provider_name: str,
+        observed_at: datetime,
+        valid_until: datetime | None,
+        quality_status: str,
+    ) -> None:
+        """Record safe freshness metadata for a real data-evidence collection."""
+
+        self._trace_recorder.record(
+            AgentTrace(
+                trace_id=f"trace-provider-{uuid4().hex}",
+                task_id=self.task.task_id,
+                plan_id=self._plan_id,
+                step_id=self.step.step_id,
+                parent_trace_id=self._step_trace_id,
+                component="tool",
+                status="success",
+                input_ref={"tool_name": "data_evidence", "role": self.step.actor},
+                output_ref={
+                    "provider_name": provider_name,
+                    "provider_freshness": valid_until.isoformat().replace("+00:00", "Z") if valid_until else "unbounded",
+                    "observed_at": observed_at.isoformat().replace("+00:00", "Z"),
+                    "quality_status": quality_status,
+                },
+                created_at=self._now,
+            )
+        )
 
     def _invoke_model(self, prompt: str) -> str:
         if self._model_calls >= self.registration.max_model_calls:
@@ -152,7 +202,13 @@ class AgentRuntimeContext:
                 status="success",
                 duration_ms=round((time.monotonic() - started) * 1000),
                 input_ref={"role": self.step.actor, "prompt_chars": len(prompt)},
-                output_ref={"response_chars": len(response), "estimated_output_tokens": output_tokens},
+                output_ref={
+                    "response_chars": len(response),
+                    "estimated_input_tokens": prompt_tokens,
+                    "estimated_output_tokens": output_tokens,
+                    # Provider-neutral until a model adapter exposes priced usage.
+                    "estimated_cost_usd": 0.0,
+                },
                 created_at=self._now,
             )
         )
@@ -189,6 +245,8 @@ class AgentRuntime:
     ) -> list[RuntimeStepResult]:
         active_now = _utc_now(now)
         task = self._task(task_id)
+        if task.status == "running":
+            task = self.repository.start_execution_if_needed(task_id, started_at=active_now)
         claimed = self.repository.claim_ready_steps(task_id, worker_id=worker_id, limit=limit, claimed_at=active_now)
         return [self.execute_claimed(task, step, now=active_now) for step in claimed]
 
@@ -200,12 +258,13 @@ class AgentRuntime:
         if step.status != "running":
             raise AgentRuntimeError("only a claimed running step can execute")
         try:
-            if (active_now - task.created_at).total_seconds() > task.budget.max_duration_seconds:
+            budget_started_at = task.execution_started_at or task.created_at
+            if (active_now - budget_started_at).total_seconds() > task.budget.max_duration_seconds:
                 raise AgentRuntimeError("task duration budget is exhausted")
             registration = self.registry.get(step.actor)
             plan = self.repository.get_latest_plan(task.task_id)
             plan_id = plan.plan_id if plan is not None else None
-            step_trace_id = f"trace-step-{step.step_id}-{step.attempt}"
+            step_trace_id = f"trace-step-{task.task_id}-{step.step_id}-{step.attempt}"
             stored_input = self.repository.get_step_input(task.task_id, step.step_id)
             if stored_input is None and registration.input_schema is None:
                 # A handler with no typed input still needs a durable payload row
@@ -229,7 +288,10 @@ class AgentRuntime:
                 task.task_id,
                 kind="model_response",
                 payload=_json_payload(typed_output),
-                source=f"agent_runtime:{step.actor}",
+                # Step identity is stored by agent_step_payloads and Trace. Keep
+                # the content-addressed output source neutral so the same typed
+                # EvidenceGap can be safely reused by multiple downstream roles.
+                source="agent_runtime",
                 created_at=active_now,
             )
             self.repository.record_step_output(
@@ -240,11 +302,18 @@ class AgentRuntime:
             )
             completed = self.repository.complete_step(
                 step.step_id,
+                task_id=task.task_id,
                 expected_status="running",
                 new_status="succeeded",
                 updated_at=active_now,
             )
-            self._message(task, step, artifact=artifact, now=active_now)
+            self._message(
+                task,
+                step,
+                artifact=artifact,
+                evidence_gap=typed_output if isinstance(typed_output, EvidenceGapRequest) else None,
+                now=active_now,
+            )
             self._trace(
                 task,
                 step,
@@ -257,7 +326,11 @@ class AgentRuntime:
         except Exception as exc:
             error = _safe_error(exc)
             try:
-                failed = self.repository.record_step_failure(step.step_id, updated_at=active_now)
+                failed = self.repository.record_step_failure(
+                    step.step_id,
+                    task_id=task.task_id,
+                    updated_at=active_now,
+                )
             except RepositoryStateError:
                 failed = step
             self._message(task, step, error=error, now=active_now)
@@ -283,10 +356,13 @@ class AgentRuntime:
         step: AgentStep,
         *,
         artifact: ArtifactRef | None = None,
+        evidence_gap: EvidenceGapRequest | None = None,
         error: str | None = None,
         now: datetime,
     ) -> None:
         summary = f"{step.actor} step {step.step_id} {'completed' if error is None else 'failed'}"
+        if evidence_gap is not None:
+            summary += f": evidence gap ({','.join(evidence_gap.missing_evidence_types)}): {evidence_gap.reason}"
         if error is not None:
             summary += f": {error}"
         self.repository.add_message(
@@ -315,7 +391,7 @@ class AgentRuntime:
         insert_trace_chain(
             self.repository.connection,
             create_trace(
-                trace_id=f"trace-runtime-{step.step_id}-{step.attempt}",
+                trace_id=f"trace-runtime-{task.task_id}-{step.step_id}-{step.attempt}",
                 module="v2_agent_runtime",
                 input_ref={"task_id": task.task_id, "step_id": step.step_id, "role": step.actor},
                 output_ref={"output_artifact_id": output_artifact_id},
@@ -327,7 +403,7 @@ class AgentRuntime:
         plan = self.repository.get_latest_plan(task.task_id)
         self.trace_recorder.record(
             AgentTrace(
-                trace_id=f"trace-step-{step.step_id}-{step.attempt}",
+                trace_id=f"trace-step-{task.task_id}-{step.step_id}-{step.attempt}",
                 task_id=task.task_id,
                 plan_id=plan.plan_id if plan is not None else None,
                 step_id=step.step_id,

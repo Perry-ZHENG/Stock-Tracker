@@ -2,9 +2,11 @@ import copy
 import os
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
+from stock_agent.bars import generate_bar_id
 from stock_agent.config import DEFAULT_CONFIG, validate_config
 from stock_agent.providers.base import MarketDataProvider
 from stock_agent.providers.registry import ProviderRegistry, ProviderRegistryError
@@ -107,6 +109,71 @@ class ProviderRegistryTests(unittest.TestCase):
         self.assertEqual(result.provider_name, "csv_demo")
         self.assertEqual(result.attempts[0].error_type, "configuration")
 
+    def test_twelve_data_budget_is_shared_by_registry_instances_using_the_same_database(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            connection = initialize_database(Path(tmp_dir) / "runtime.sqlite")
+            config = _config(
+                default="twelve_data",
+                priority=["twelve_data"],
+                fallback_order=["csv_demo"],
+                twelve_credit_budget=1,
+            )
+            primary_fetches = 0
+
+            def primary_factory() -> _SuccessfulProvider:
+                class _CountingPrimaryProvider(_SuccessfulProvider):
+                    def fetch_intraday_bars(self, *args, **kwargs):
+                        nonlocal primary_fetches
+                        primary_fetches += 1
+                        return super().fetch_intraday_bars(*args, **kwargs)
+
+                return _CountingPrimaryProvider()
+
+            first = ProviderRegistry(
+                root=PROJECT_ROOT,
+                config=config,
+                connection=connection,
+                provider_factories={"twelve_data": primary_factory, "csv_demo": _SuccessfulProvider},
+            ).fetch_intraday_bars(symbols=["QQQ"], interval="30m")
+            second = ProviderRegistry(
+                root=PROJECT_ROOT,
+                config=config,
+                connection=connection,
+                provider_factories={"twelve_data": primary_factory, "csv_demo": _SuccessfulProvider},
+            ).fetch_intraday_bars(symbols=["QQQ"], interval="30m")
+            reservations = connection.execute(
+                "SELECT COALESCE(SUM(credits), 0) FROM provider_credit_reservations WHERE provider_name = 'twelve_data'"
+            ).fetchone()[0]
+            connection.close()
+
+        self.assertEqual(first.provider_name, "twelve_data")
+        self.assertEqual(second.provider_name, "csv_demo")
+        self.assertEqual(second.attempts[0].error_type, "rate_limit")
+        self.assertEqual(primary_fetches, 1)
+        self.assertEqual(reservations, 1)
+
+    def test_direct_twelve_credit_exhaustion_is_classified_as_rate_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            connection = initialize_database(Path(tmp_dir) / "runtime.sqlite")
+            config = _config(
+                default="twelve_data",
+                priority=["twelve_data"],
+                fallback_order=["csv_demo"],
+            )
+            result = ProviderRegistry(
+                root=PROJECT_ROOT,
+                config=config,
+                connection=connection,
+                provider_factories={
+                    "twelve_data": lambda: _FailingProvider("Twelve Data minute credit budget exhausted"),
+                    "csv_demo": _SuccessfulProvider,
+                },
+            ).fetch_intraday_bars(symbols=["QQQ"], interval="30m")
+            connection.close()
+
+        self.assertEqual(result.provider_name, "csv_demo")
+        self.assertEqual(result.attempts[0].error_type, "rate_limit")
+
 
 class _FailingProvider(MarketDataProvider):
     def __init__(self, message: str) -> None:
@@ -116,7 +183,36 @@ class _FailingProvider(MarketDataProvider):
         raise RuntimeError(self.message)
 
 
-def _config(*, default: str, priority: list[str], fallback_order: list[str]):
+class _SuccessfulProvider(MarketDataProvider):
+    def fetch_intraday_bars(self, *args, **kwargs):
+        timestamp = datetime(2026, 5, 22, 13, 30, tzinfo=UTC)
+        return [
+            Bar(
+                bar_id=generate_bar_id("QQQ", "30m", timestamp.isoformat().replace("+00:00", "Z"), "fixture"),
+                symbol="QQQ",
+                timestamp=timestamp,
+                interval="30m",
+                open=100,
+                high=101,
+                low=99,
+                close=100,
+                volume=1_000,
+                vwap=100,
+                source="fixture",
+            )
+        ]
+
+    def fetch_provider_health(self) -> dict[str, str]:
+        return {"status": "healthy"}
+
+
+def _config(
+    *,
+    default: str,
+    priority: list[str],
+    fallback_order: list[str],
+    twelve_credit_budget: int | None = None,
+):
     config = copy.deepcopy(DEFAULT_CONFIG)
     config["provider"]["default"] = default
     config["provider"]["priority"] = priority
@@ -126,6 +222,8 @@ def _config(*, default: str, priority: list[str], fallback_order: list[str]):
     }
     config["provider"]["live"]["name"] = "alpha_vantage"
     config["provider"]["live"]["api_key_env"] = "MARKET_DATA_API_KEY_NOT_SET"
+    if twelve_credit_budget is not None:
+        config["provider"]["twelve_data"]["credit_budget_per_minute"] = twelve_credit_budget
     return validate_config(config)
 
 

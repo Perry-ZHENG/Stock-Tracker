@@ -13,7 +13,13 @@ from stock_agent.config import DEFAULT_CONFIG, render_config_yaml
 from stock_agent.storage.repositories import list_health_metrics
 from stock_agent.storage.repositories import list_notifications, list_signals, list_strategy_snapshots
 from stock_agent.storage.sqlite import initialize_runtime_database, open_database
-from stock_agent.worker import SingleInstanceLock, SingleInstanceLockError, Worker
+from stock_agent.worker import (
+    ResearchWorkerPipelineV2,
+    ResearchWorkerTickV2,
+    SingleInstanceLock,
+    SingleInstanceLockError,
+    Worker,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MARKET_OPEN_NOW = datetime(2026, 5, 22, 15, 30, tzinfo=UTC)
@@ -56,7 +62,14 @@ class WorkerTests(unittest.TestCase):
             _copy_sample_data(root)
             stream = io.StringIO()
 
-            exit_code = run_worker(root, once=True, interval_sec=0.01, stream=stream, now_fn=lambda: MARKET_OPEN_NOW)
+            exit_code = run_worker(
+                root,
+                once=True,
+                interval_sec=0.01,
+                stream=stream,
+                now_fn=lambda: MARKET_OPEN_NOW,
+                include_legacy_market_watch=True,
+            )
             connection = open_database(root / "data/runtime/stock_agent.sqlite")
             metrics = list_health_metrics(connection)
             connection.close()
@@ -129,6 +142,28 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(metrics[0].module, "worker")
         self.assertFalse((root / "data/runtime/stock_agent.sqlite").exists())
 
+    def test_research_pipeline_skips_legacy_market_watch_unless_explicitly_enabled(self) -> None:
+        class ResearchWorker:
+            def run_once(self):
+                return ResearchWorkerTickV2(task_ids=["task-1"], executed_steps=4)
+
+        class LegacyPipeline:
+            calls = 0
+
+            def run_once(self):
+                self.calls += 1
+                return object()
+
+        legacy = LegacyPipeline()
+        summary = ResearchWorkerPipelineV2(research_worker=ResearchWorker()).run_once()
+
+        self.assertEqual(summary.status, "research_only")
+        self.assertEqual(summary.provider, "not_polled")
+        self.assertEqual(legacy.calls, 0)
+
+        ResearchWorkerPipelineV2(research_worker=ResearchWorker(), legacy_pipeline=legacy).run_once()
+        self.assertEqual(legacy.calls, 1)
+
     def test_worker_pipeline_persists_signal_snapshot_notification_and_lake(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -143,7 +178,14 @@ class WorkerTests(unittest.TestCase):
             config_path.write_text(render_config_yaml(config), encoding="utf-8")
             stream = io.StringIO()
 
-            exit_code = run_worker(root, once=True, interval_sec=0.01, stream=stream, now_fn=lambda: MARKET_OPEN_NOW)
+            exit_code = run_worker(
+                root,
+                once=True,
+                interval_sec=0.01,
+                stream=stream,
+                now_fn=lambda: MARKET_OPEN_NOW,
+                include_legacy_market_watch=True,
+            )
             connection = open_database(root / "data/runtime/stock_agent.sqlite")
             signals = list_signals(connection)
             snapshots = list_strategy_snapshots(connection)
@@ -176,9 +218,23 @@ class WorkerTests(unittest.TestCase):
             config_path.parent.mkdir(parents=True)
             config_path.write_text(render_config_yaml(config), encoding="utf-8")
 
-            first_exit = run_worker(root, once=True, interval_sec=0.01, stream=io.StringIO(), now_fn=lambda: MARKET_OPEN_NOW)
+            first_exit = run_worker(
+                root,
+                once=True,
+                interval_sec=0.01,
+                stream=io.StringIO(),
+                now_fn=lambda: MARKET_OPEN_NOW,
+                include_legacy_market_watch=True,
+            )
             second_stream = io.StringIO()
-            second_exit = run_worker(root, once=True, interval_sec=0.01, stream=second_stream, now_fn=lambda: MARKET_OPEN_NOW)
+            second_exit = run_worker(
+                root,
+                once=True,
+                interval_sec=0.01,
+                stream=second_stream,
+                now_fn=lambda: MARKET_OPEN_NOW,
+                include_legacy_market_watch=True,
+            )
             connection = open_database(root / "data/runtime/stock_agent.sqlite")
             notifications = list_notifications(connection)
             signal_notifications = [

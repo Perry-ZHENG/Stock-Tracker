@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from stock_agent.agents.orchestrator import Orchestrator, OrchestratorError
 from stock_agent.agents.planner import PlanningContext
 from stock_agent.agents.runtime import AgentRuntime, RuntimeStepResult
+from stock_agent.contracts.evidence import EvidenceGapRequest
 from stock_agent.contracts.tasks import AgentTask, ResearchRequest
 from stock_agent.observability import AgentTrace, AgentTraceRecorder, BudgetLedger
 from stock_agent.security.research_policy import ResearchSafetyPolicy, SafetyRequest
@@ -47,6 +48,7 @@ class AgentService:
         runtime: AgentRuntime,
         orchestrator: Orchestrator | None = None,
         approval_service: SignalApprovalService | None = None,
+        require_final_report: bool = False,
     ) -> None:
         self.connection = connection
         self.lock = RLock()
@@ -54,6 +56,7 @@ class AgentService:
         self.runtime = runtime
         self.orchestrator = orchestrator or Orchestrator(connection)
         self.approval_service = approval_service
+        self.require_final_report = require_final_report
         self.safety_policy = ResearchSafetyPolicy(connection)
         self.budget_ledger = BudgetLedger(connection)
         self.trace_recorder = AgentTraceRecorder(connection)
@@ -102,6 +105,19 @@ class AgentService:
                 )
             )
         except (RepositoryStateError, OrchestratorError, sqlite3.IntegrityError) as exc:
+            # Task creation commits before planning starts. Do not leave an
+            # unplanned task pending when the planner rejects the submission.
+            stored = self.repository.get_task(identifier)
+            if stored is not None and stored.status == "pending":
+                try:
+                    self.repository.transition_task(
+                        identifier,
+                        expected_status="pending",
+                        new_status="failed",
+                        updated_at=active_now,
+                    )
+                except RepositoryStateError:
+                    pass
             raise AgentServiceError(str(exc)) from exc
         stored = self.repository.get_task(identifier)
         assert stored is not None
@@ -117,6 +133,7 @@ class AgentService:
             "task": task.model_dump(mode="json"),
             "plan": plan.model_dump(mode="json") if plan is not None else None,
             "messages": [message.model_dump(mode="json") for message in self.repository.list_messages(task_id)],
+            "evidence_gaps": self._evidence_gaps(task_id),
         }
 
     @_service_locked
@@ -154,6 +171,49 @@ class AgentService:
         results = self.runtime.run_ready(task_id, worker_id=worker_id, limit=limit, now=now)
         self._complete_if_latest_plan_finished(task_id, now=now)
         return results
+
+    @_service_locked
+    def recover(self, task_id: str, *, now: datetime | None = None) -> list[object]:
+        """Return interrupted running steps to the durable queue after a restart."""
+
+        if self.repository.get_task(task_id) is None:
+            raise AgentServiceError(f"task does not exist: {task_id}")
+        return self.orchestrator.recover(task_id, now=now)
+
+    @_service_locked
+    def replan_for_evidence(self, gap: EvidenceGapRequest, *, now: datetime | None = None) -> object:
+        """Reserve evidence-gap replanning for the trusted background worker."""
+
+        try:
+            return self.orchestrator.request_evidence(gap, now=now)
+        except OrchestratorError as exc:
+            raise AgentServiceError(str(exc)) from exc
+
+    @_service_locked
+    def retry_report_after_validation(self, task_id: str, *, now: datetime | None = None) -> object:
+        """Allow a bounded report-only retry without repeating external evidence calls."""
+
+        task = self.repository.get_task(task_id)
+        if task is None:
+            raise AgentServiceError(f"task does not exist: {task_id}")
+        self._authorize_research(raw_text=task.request.question, task_id=task_id, now=_utc_now(now))
+        report_step = next((step for step in self.repository.list_steps(task_id) if step.step_id == "step-report"), None)
+        if report_step is None or report_step.status != "succeeded":
+            raise AgentServiceError("only a completed initial report step can be retried")
+        artifact_id = self.repository.get_step_output_artifact_id(task_id, report_step.step_id)
+        artifact = self.repository.get_artifact(task_id, artifact_id) if artifact_id else None
+        if artifact is None:
+            raise AgentServiceError("report retry requires a durable report validation result")
+        try:
+            gap = EvidenceGapRequest.model_validate(self.runtime.artifact_service.load_json(task_id, artifact.ref))
+        except Exception as exc:
+            raise AgentServiceError("only a rejected report draft can be retried") from exc
+        if gap.requester != "report" or not gap.reason.startswith("report draft cannot be tied to verified evidence:"):
+            raise AgentServiceError("report retry is allowed only for deterministic report validation failures")
+        try:
+            return self.orchestrator.retry_report_after_validation(task_id, now=now)
+        except OrchestratorError as exc:
+            raise AgentServiceError(str(exc)) from exc
 
     @_service_locked
     def pause(self, task_id: str, *, now: datetime | None = None) -> AgentTask:
@@ -198,6 +258,11 @@ class AgentService:
         plan = self.repository.get_latest_plan(task_id)
         if task is None or plan is None or task.status != "running":
             return
+        if self.require_final_report:
+            from stock_agent.storage.report_repository import ReportRepository
+
+            if ReportRepository(self.connection).get_latest_final_for_task(task_id) is None:
+                return
         if all(step.status in {"succeeded", "skipped"} for step in plan.steps):
             try:
                 self.repository.transition_task(
@@ -208,6 +273,24 @@ class AgentService:
                 )
             except RepositoryStateError:
                 return
+
+    def _evidence_gaps(self, task_id: str) -> list[dict[str, object]]:
+        """Expose durable gaps so transports do not present a stuck task as success."""
+
+        gaps: list[dict[str, object]] = []
+        for step in self.repository.list_steps(task_id):
+            artifact_id = self.repository.get_step_output_artifact_id(task_id, step.step_id)
+            if artifact_id is None:
+                continue
+            artifact = self.repository.get_artifact(task_id, artifact_id)
+            if artifact is None:
+                continue
+            try:
+                gap = EvidenceGapRequest.model_validate(self.runtime.artifact_service.load_json(task_id, artifact.ref))
+            except Exception:
+                continue
+            gaps.append({"step_id": step.step_id, **gap.model_dump(mode="json")})
+        return gaps
 
     def _authorize_research(self, *, raw_text: str, now: datetime, task_id: str | None = None) -> None:
         decision = self.safety_policy.inspect(

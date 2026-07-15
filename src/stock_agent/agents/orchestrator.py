@@ -68,6 +68,25 @@ class Orchestrator:
         self._trace(plan, action="evidence_gap_replanned", now=active_now)
         return plan
 
+    def retry_report_after_validation(self, task_id: str, *, now: datetime | None = None) -> AgentPlan:
+        """Create a report-only retry plan after a verified wording rejection."""
+
+        active_now = _utc_now(now)
+        task = self._task(task_id)
+        self._authorize(task, task.request.question, action="retry_report", now=active_now)
+        if task.status != "running":
+            raise OrchestratorError("report retries require a running task")
+        previous = self.repository.get_latest_plan(task_id)
+        if previous is None:
+            raise OrchestratorError("cannot retry a task without an initial plan")
+        try:
+            plan = self.planner.retry_report_after_validation(task, previous_revision=previous.revision)
+            self.repository.save_plan(plan, created_at=active_now)
+        except (PlanningError, RepositoryStateError) as exc:
+            raise OrchestratorError(str(exc)) from exc
+        self._trace(plan, action="report_retry_planned", now=active_now)
+        return plan
+
     def claim_ready_steps(
         self,
         task_id: str,

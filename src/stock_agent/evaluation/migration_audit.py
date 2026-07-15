@@ -82,7 +82,7 @@ def _imports(path: Path) -> set[str]:
 
 
 def _classification(relative: str) -> str:
-    if relative.startswith(("contracts/", "evaluation/", "observability/", "tooling/", "signal_lab/", "services/")):
+    if relative.startswith(("contracts/", "evaluation/", "observability/", "tooling/", "signal_lab/", "services/")) or relative == "worker/research_v2.py":
         return "new_v2"
     if relative in {"cli.py", "web/agent_service.py", "agent/runner.py", "agent/tools.py", "signals/pipeline.py"}:
         return "bridge_v2"

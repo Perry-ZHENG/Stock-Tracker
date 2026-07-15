@@ -68,7 +68,7 @@ class ExecutionBudget(StrictSchema):
 
     max_agent_steps: int = Field(default=12, ge=1, le=100)
     max_tool_calls: int = Field(default=24, ge=0, le=500)
-    max_model_calls: int = Field(default=8, ge=0, le=100)
+    max_model_calls: int = Field(default=4, ge=0, le=100)
     max_duration_seconds: int = Field(default=900, ge=1, le=86_400)
 
 

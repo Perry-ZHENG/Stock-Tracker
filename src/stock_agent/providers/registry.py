@@ -7,7 +7,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -17,6 +17,7 @@ from stock_agent.health import HealthThresholds, record_health_metric
 from stock_agent.providers.base import MarketDataProvider
 from stock_agent.providers.csv_demo import CsvDemoProvider, CsvDemoProviderError
 from stock_agent.providers.live import LiveProviderError, create_live_provider
+from stock_agent.providers.synthetic_demo_v2 import SyntheticDemoProviderV2
 from stock_agent.providers.twelve_data import (
     TwelveDataProviderError,
     create_twelve_data_provider,
@@ -33,6 +34,10 @@ ProviderFactory = Callable[[], MarketDataProvider]
 
 class ProviderRegistryError(RuntimeError):
     """Raised when no configured market data provider can return bars."""
+
+
+class ProviderCreditBudgetError(ProviderRegistryError):
+    """A durable per-provider request budget would be exceeded."""
 
 
 @dataclass(frozen=True)
@@ -86,11 +91,13 @@ class ProviderRegistry:
         end: datetime | None = None,
     ) -> ProviderFetchResult:
         attempts: list[ProviderAttempt] = []
+        last_empty_result: ProviderFetchResult | None = None
         for provider_name in self._provider_order():
             request_id = _request_id(provider_name)
             started = time.perf_counter()
             try:
                 provider = self._create_provider(provider_name)
+                self._reserve_provider_credits(provider_name, symbols)
                 provider_interval = interval or (
                     self.config.provider.twelve_data.source_interval
                     if provider_name.lower() in {"twelve_data", "twelvedata"}
@@ -103,6 +110,26 @@ class ProviderRegistry:
                     end=end,
                 )
                 latency_sec = time.perf_counter() - started
+                if not bars:
+                    empty_attempt = ProviderAttempt(
+                        provider_name=provider_name,
+                        status="failed",
+                        latency_sec=latency_sec,
+                        request_id=request_id,
+                        error_type="data",
+                        error_msg="provider returned no bars for the requested window",
+                    )
+                    attempts.append(empty_attempt)
+                    last_empty_result = ProviderFetchResult(
+                        provider_name=provider_name,
+                        bars=[],
+                        attempts=[*attempts],
+                        fallback_used=len(attempts) > 1,
+                        request_id=request_id,
+                        provider_health=redact_sensitive(provider.fetch_provider_health()),
+                        latency_sec=latency_sec,
+                    )
+                    continue
                 attempt = ProviderAttempt(
                     provider_name=provider_name,
                     status="success",
@@ -136,6 +163,8 @@ class ProviderRegistry:
                 )
 
         self._record_failure(attempts)
+        if last_empty_result is not None:
+            return last_empty_result
         message = "all configured market data providers failed"
         if attempts:
             message += f": {attempts[-1].provider_name}: {redact_text(attempts[-1].error_msg)}"
@@ -208,6 +237,8 @@ class ProviderRegistry:
             return self.provider_factories[normalized]()
         if normalized == "csv_demo":
             return CsvDemoProvider(self.root / self.config.provider.csv_demo.path)
+        if normalized == "synthetic_demo":
+            return SyntheticDemoProviderV2()
         if normalized in {"twelve_data", "twelvedata"}:
             twelve_data = self.config.provider.twelve_data
             return create_twelve_data_provider(
@@ -232,6 +263,50 @@ class ProviderRegistry:
         if normalized in {"cache", "fallback"}:
             raise ProviderRegistryError("cache fallback provider is not implemented yet")
         raise ProviderRegistryError(f"unsupported provider: {provider_name}")
+
+    def _reserve_provider_credits(self, provider_name: str, symbols: list[str] | None) -> None:
+        """Reserve worst-case Twelve requests in SQLite before issuing HTTP.
+
+        Reservations are intentionally conservative: a configured retry can
+        consume a credit for every attempt, so all possible attempts are held
+        before the first request. This shared database gate survives provider
+        recreation, process restarts, and multiple Workers.
+        """
+
+        if provider_name.lower() not in {"twelve_data", "twelvedata"} or self.connection is None:
+            return
+        symbol_count = len(symbols or [])
+        if symbol_count == 0:
+            return
+        settings = self.config.provider.twelve_data
+        credits = symbol_count * (settings.max_retries + 1)
+        active_now = utc_now()
+        cutoff = active_now - timedelta(minutes=1)
+        try:
+            self.connection.execute("BEGIN IMMEDIATE")
+            self.connection.execute(
+                "DELETE FROM provider_credit_reservations WHERE provider_name = ? AND reserved_at <= ?",
+                ("twelve_data", _timestamp(cutoff)),
+            )
+            row = self.connection.execute(
+                "SELECT COALESCE(SUM(credits), 0) AS used_credits "
+                "FROM provider_credit_reservations WHERE provider_name = ?",
+                ("twelve_data",),
+            ).fetchone()
+            used_credits = int(row["used_credits"] if row is not None else 0)
+            if used_credits + credits > settings.credit_budget_per_minute:
+                raise ProviderCreditBudgetError(
+                    "Twelve Data minute credit budget exhausted: "
+                    f"used={used_credits}, requested={credits}, limit={settings.credit_budget_per_minute}"
+                )
+            self.connection.execute(
+                "INSERT INTO provider_credit_reservations (provider_name, reserved_at, credits) VALUES (?, ?, ?)",
+                ("twelve_data", _timestamp(active_now), credits),
+            )
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
 
     def _record_success(self, result: ProviderFetchResult) -> None:
         if self.connection is None:
@@ -289,6 +364,8 @@ def _append_unique(values: list[str], value: str) -> None:
 
 def _classify_provider_error(exc: Exception) -> ProviderErrorType:
     message = str(exc).lower()
+    if isinstance(exc, ProviderCreditBudgetError):
+        return "rate_limit"
     if isinstance(exc, CsvDemoProviderError):
         return "data"
     if exc.__class__.__name__ == "BrokerMarketDataProviderError":
@@ -298,16 +375,20 @@ def _classify_provider_error(exc: Exception) -> ProviderErrorType:
     ):
         return "configuration"
     if isinstance(exc, TwelveDataProviderError) and any(
-        token in message for token in ("missing api key", "unsupported", "required", "credit budget")
+        token in message for token in ("missing api key", "unsupported", "required")
     ):
         return "configuration"
-    if any(token in message for token in ("rate", "throttle", "quota", "limit")):
+    if any(token in message for token in ("rate", "throttle", "quota", "limit", "credit budget")):
         return "rate_limit"
     if any(token in message for token in ("timeout", "latency", "delay")):
         return "latency"
     if any(token in message for token in ("invalid", "missing columns", "file not found", "parse")):
         return "data"
     return "unknown"
+
+
+def _timestamp(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _fallback_error_rate(config: StockAgentConfig) -> float:

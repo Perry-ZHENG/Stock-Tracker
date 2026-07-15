@@ -1,618 +1,299 @@
 # Stock Agent
 
-## 1. Task Summary
+面向美股研究的本地优先 Agent 项目。它收集可追溯的市场数据与新闻证据，执行已审批的信号函数，按需调用专业分析 Agent，并生成带证据引用、限制条件和校验结果的研究报告。
 
-Stock Agent is a local-first stock monitoring agent framework for US market watch workflows.
+项目只生成研究说明和报告，**不连接券商、不下单、不自动交易**。
 
-> V2 adds a bounded multi-Agent research path: typed research tasks, evidence-backed reports, read-only MCP, isolated signal experiments and human-only signal approval. It never performs trading. See [V2 architecture](docs/v2_architecture.md) and [V2 operations](docs/v2_operations.md).
+## 核心能力
 
-It is designed to:
+- FastAPI 工作台：一个进程同时提供服务端 API 和内嵌 Jinja 前端页面。
+- V2 研究任务：提交研究请求、持久化计划和步骤、支持暂停、恢复、取消及重启恢复。
+- Evidence-first：市场数据、新闻、分析和报告均通过 Task-scoped Artifact/Evidence 保存和校验。
+- 多 Agent：Signal Discovery、异动分析、宏观分析、报告 Agent；计划、验证和人工审批保持确定性边界。
+- 信号安全链：Proposal -> Candidate -> Sandbox -> 时间切分验证 -> 人工审批 -> Active Signal。
+- 只读 MCP、运行 Trace、预算和 Provider freshness 诊断。
 
-- Load demo or live market data.
-- Build 30-minute bars.
-- Run MA Cross, BOLL, MACD, KDJ, and Active-J strategies.
-- Review candidate signals with supervisor checks.
-- Store signals, traces, health metrics, and notifications in SQLite.
-- Query signals, health status, traces, abnormal bars, and provider status through CLI.
-- Accept controlled natural-language input from CLI, Telegram, or FastAPI.
-- Route Chinese or English requests to typed tools through an optional model API.
+详细设计见 [V2 架构](docs/v2_architecture.md)、[运行手册](docs/v2_operations.md) 和 [V2 任务清单](task_agent_v2.md)。
 
-Currently runnable market-data flow:
+## 项目结构
 
 ```text
-Twelve Data 1m bars -> 30m bar builder -> strategy -> supervisor -> SQLite
-        | provider failure
-        v
-demo CSV fallback -> strategy -> supervisor -> SQLite
+src/stock_agent/
+  web/                     FastAPI 路由、页面模板和 SSE
+  commands/                CLI、Web、Telegram、Worker 启动入口
+  services/
+    production_v2.py       正式 V2 组合根：构造 AgentService 与真实 Step Handler
+    agent_service.py       任务生命周期服务
+    entrypoints.py         CLI / Web / Telegram 共用的研究入口
+  agents/                  Orchestrator、Runtime、异动/宏观/报告/信号发现 Agent
+  research/                DataEvidence、NewsEvidence、特征和宏观证据工作流
+  reports/                 EvidenceBundle、ReportService、渲染器
+  signals/                 Active Signal 执行、Registry、人工审批
+  signal_lab/              Candidate Builder、Sandbox、验证与泄漏检查
+  worker/
+    research_v2.py         持久化 V2 研究任务 Worker
+    pipeline.py             兼容的市场监控 Worker pipeline
+  contracts/               Pydantic 输入/输出契约
+  artifacts/ evidence/     内容寻址 Artifact 与 Evidence 服务
+  storage/                 SQLite 迁移和 Repository
+  observability/           Agent Trace、预算与健康诊断
+
+configs/config.yaml        运行配置
+data/sample/               离线 CSV 示例数据
+tests/                     单元、集成、E2E 和安全测试
+docs/                      架构、部署、运维与迁移文档
 ```
 
-Currently runnable interaction flow:
+正式研究调用链：
 
 ```text
-CLI / Telegram / FastAPI
-        -> persistent single-input gate
-        -> ReAct tool-routing Agent or deterministic parser
-        -> typed query tool
-        -> SQLite / Data Lake result
+CLI / FastAPI / Telegram
+  -> build_production_v2()
+  -> ResearchEntryAdapter -> AgentService
+  -> Orchestrator + AgentRuntime
+  -> Data/News Evidence -> Specialist Agents -> ReportService
+  -> Claim Validator -> FinalReport
+
+stock-agent worker
+  -> ResearchTaskWorkerV2（持久步骤与可重试证据缺口）
+  -> 兼容市场监控 pipeline
 ```
 
-### 1.1 Features Added Since The Previous Version
+## 环境要求
 
-- Added the Twelve Data REST provider, request retry and credit-budget checks,
-  1-minute source bars, 30-minute aggregation, and CSV fallback.
-- Added a persistent global input owner shared by CLI, Telegram, and FastAPI.
-  Only the active interface can submit commands; switching requires approval
-  from the original interface and expires after 10 minutes by default.
-- Added Telegram Bot API long polling, interface heartbeats, input-switch
-  request/approval commands, and proactive approval notifications.
-- Added a FastAPI workbench with query APIs, Agent plan/confirm APIs, input
-  control, an approval page, and an SSE status stream.
-- Added a bilingual ReAct routing Agent with typed tools. It asks for missing
-  parameters, returns `no_suitable_tool` when no script matches, and never
-  invents an unregistered script.
-- Added OpenRouter-hosted Qwen configuration with `openrouter/free` fallback
-  for temporary rate-limit or provider errors.
-- Added regression coverage for Agent routing, all three input interfaces,
-  FastAPI, Telegram transport, live-data configuration, and worker fallback.
+- Python `3.12+`
+- `uv`，推荐用于依赖与脚本管理
+- macOS、Linux 或 Windows 均可运行；本地工作台默认监听 `127.0.0.1`
 
-## 2. Installation Requirements
-
-- Python 3.12+
-- uv
-- Optional: pipx or uv tool
-
-Development install:
+安装开发依赖：
 
 ```sh
 uv sync --extra dev
 ```
 
-Tool-style install:
+安装为本机命令行工具（任选其一）：
 
 ```sh
 pipx install .
-```
-
-Or:
-
-```sh
 uv tool install .
 ```
 
-## 3. Interface Configuration
+也可以使用已经创建的虚拟环境：
 
-Default config file:
-
-```text
-configs/config.yaml
+```sh
+.venv/bin/python --version
 ```
 
-### 3.1 Demo Market Data Interface
+## 快速启动
 
-Purpose: Validate the system without any external API key.
+### 1. 检查或创建配置
 
-```yaml
-provider:
-  default: csv_demo
-  csv_demo:
-    path: data/sample/sample_bars.csv
-```
-
-### 3.2 Twelve Data Live Market Data Interface
-
-Purpose: Fetch 1-minute live bars, aggregate them into the configured 30-minute
-bars, and fall back to demo CSV when the provider is unavailable.
-
-```yaml
-provider:
-  default: twelve_data
-  priority:
-    - twelve_data
-  fallback:
-    enabled: true
-    order:
-      - csv_demo
-  csv_demo:
-    path: data/sample/sample_bars.csv
-  twelve_data:
-    api_key_env: TWELVE_DATA_API_KEY
-    base_url: https://api.twelvedata.com
-    source_interval: 1min
-    poll_interval_sec: 60
-    request_timeout_sec: 15
-    max_retries: 3
-    credit_budget_per_minute: 8
-```
-
-PowerShell environment variable:
-
-```powershell
-$env:TWELVE_DATA_API_KEY = "your-twelve-data-key"
-```
-
-Watch symbols:
-
-```yaml
-symbols:
-  default:
-    - QQQ
-    - NVDA
-    - TSLA
-```
-
-### 3.3 Telegram Interface
-
-Purpose: Enable the Telegram query/interaction entrypoint through Bot API long polling.
-
-```yaml
-telegram:
-  enabled: true
-  token_env: TELEGRAM_BOT_TOKEN
-  allowed_user_ids:
-    - 123456789
-  admin_user_ids: []
-  allowed_chat_ids: []
-```
-
-PowerShell environment variable:
-
-```powershell
-$env:TELEGRAM_BOT_TOKEN = "your-telegram-bot-token"
-```
-
-Current Telegram bot core supports:
-
-- `/signals`
-- `/health`
-- `/news`
-- `/schedule`
-- `/provider-compare`
-- `/abnormal-bars`
-- `/trace SIGNAL_ID`
-- `/input status`
-- `/input request`
-- `/input approve REQUEST_ID`
-- `/input reject REQUEST_ID`
-- Pending config changes
-- High-risk trading/account/credential intent blocking
-
-To enable automatic worker-to-Telegram push alerts, add:
-
-```text
-TelegramNotificationSink -> NotificationOutbox.dispatch_pending(...)
-```
-
-### 3.4 LLM Interface
-
-Purpose: Use the OpenRouter-hosted Qwen model for Agent tool routing, not for
-direct trading decisions.
-
-```yaml
-llm:
-  enabled: true
-  provider: openrouter
-  model: qwen/qwen3-next-80b-a3b-instruct:free
-  fallback_model: openrouter/free
-  api_key_env: OPENROUTER_API_KEY
-  base_url: https://openrouter.ai/api/v1
-  request_timeout_sec: 45
-  max_retries: 0
-```
-
-PowerShell environment variable:
-
-```powershell
-$env:OPENROUTER_API_KEY = "your-openrouter-key"
-```
-
-Integration shape:
-
-```python
-parser = LlmParser(client=openai_intent_client, enabled=True)
-bot = TelegramBot(
-    root=root,
-    connection=connection,
-    settings=settings,
-    config_context=config_context,
-    llm_parser=parser,
-)
-```
-
-The model is used only to select a registered tool and extract its arguments.
-Indicator calculation, signal generation, supervisor checks, and trading
-actions remain outside the model.
-
-Registered Agent tools:
-
-- `query_signals`, `query_bars`, `query_health`, and `query_trace`
-- `fetch_twelve_data_bars` for direct remote Twelve Data OHLCV requests
-- `query_news`, `query_statistics`, and `query_schedule`
-- `query_provider_compare`, `query_abnormal_bars`, and `query_config_changes`
-- `ask_user` for missing parameters
-- `no_suitable_tool` for unsupported requests
-
-For symbol-specific market dynamics, K-line, or signal queries, the caller must
-provide `from_ts`, `to_ts`, and an explicit IANA `timezone`. Both timestamps
-must include a calendar date and clock time. Relative phrases such as “today”
-or “recently” trigger a clarification instead of being guessed by the model.
-
-Example natural-language request:
-
-```text
-请直接从 Twelve Data 获取 QQQ 在 2026-07-06 09:30 到
-2026-07-06 10:30 America/New_York 的 1 分钟行情
-```
-
-`fetch_twelve_data_bars` calls the existing Twelve Data REST provider directly.
-It does not read the local Data Lake, start the Worker, run a strategy, create a
-signal, or require an MCP server. MCP can be added later if these tools need to
-be exposed to external Agent clients.
-
-### 3.5 FastAPI Workbench
-
-Purpose: Expose read-only queries, controlled Agent input, input ownership, and
-live status updates to a local web client.
-
-Start the current web command implementation:
-
-```powershell
-uv run python -c "from pathlib import Path; from stock_agent.commands.web import run_web; raise SystemExit(run_web(Path.cwd()))"
-```
-
-Then open:
-
-```text
-http://127.0.0.1:8000
-http://127.0.0.1:8000/api/docs
-```
-
-The home page displays the active input interface and pending switch requests.
-Submit an Agent request through the API:
-
-```powershell
-$body = @{ message = "查询 QQQ 今天的 MACD 信号" } | ConvertTo-Json
-Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://127.0.0.1:8000/api/v1/agent/plan" `
-  -ContentType "application/json" `
-  -Body $body
-```
-
-Main endpoints:
-
-- `GET /api/v1/bars`
-- `GET /api/v1/signals`
-- `GET /api/v1/signals/{signal_id}/trace`
-- `GET /api/v1/health`
-- `GET /api/v1/config-changes`
-- `POST /api/v1/agent/plan`
-- `POST /api/v1/agent/runs/{run_id}/confirm`
-- `GET /api/v1/input`
-- `POST /api/v1/input/switch/requests`
-- `GET /api/v1/events` (SSE)
-
-### 3.6 Global Input Control
-
-CLI, Telegram, and FastAPI are all output/query interfaces, but only one of
-them may submit commands at a time.
-
-- The active interface and pending switch requests are persisted in SQLite.
-- A blocked interface receives the current active-interface message.
-- The new interface submits a switch request.
-- The original active interface must approve or reject the request.
-- Requests expire after 600 seconds by default.
-- The original interface must be online for a switch request to be created.
-
-See `docs/input_control.md` for the command and API details.
-
-## 4. Usage Steps And Expected Outputs
-
-### Step 1. Initialize Config
-
-Purpose: Generate the default config and environment example.
+默认配置在 `configs/config.yaml`。若项目副本中没有该文件：
 
 ```sh
 uv run stock-agent init-config
 ```
 
-Expected output:
+### 2. 一条命令启动前端、后端和 Worker
 
-```text
-exists: <project-root>/configs/config.yaml
-exists: <project-root>/.env.example
-```
-
-### Step 2. Run Deployment Dry-Run Validation
-
-Purpose: Confirm that config, demo CSV, and runtime directories are ready.
+当前前端是 FastAPI 内嵌工作台，不需要单独启动 Node、Vue 或 React 服务。
 
 ```sh
-uv run stock-agent deploy-validate
+./scripts/stack_v2.sh start
 ```
 
-Expected output:
-
-```text
-deploy_validation_status=ok
-dry_run=true
-root=<project-root>
-config_path=<project-root>/configs/config.yaml
-check | status | target | message
-workdir | ok | <project-root> | project working directory
-config | ok | <project-root>/configs/config.yaml | config loaded
-sqlite_parent | ok | <project-root>/data/runtime | SQLite runtime directory
-lake_parent | ok | <project-root>/data/lake | lake storage parent directory
-duckdb_parent | ok | <project-root>/data/analytics | DuckDB analytics directory; created by runtime when needed
-csv_demo | ok | <project-root>/data/sample/sample_bars.csv | demo CSV data source
-```
-
-### Step 3. Run Offline Demo
-
-Purpose: Verify that demo data can generate a signal, pass supervisor review, and persist to SQLite.
+脚本会加载 `~/.config/stock-agent/env`、启动 FastAPI 工作台和常驻 V2 Worker，并把日志写入 `data/runtime/logs/`。首次从手工启动切换到脚本管理时，先在原来的 Web、Worker 终端按 `Ctrl+C`；之后使用以下命令统一管理：
 
 ```sh
-uv run stock-agent run-demo
+./scripts/stack_v2.sh status
+./scripts/stack_v2.sh logs
+./scripts/stack_v2.sh restart
+./scripts/stack_v2.sh stop
 ```
 
-Expected output:
+脚本只停止它自己启动并记录 PID 的进程，不会终止其他终端手工启动的服务。若仍需手工启动，可使用 `stock-agent web` 与 `stock-agent worker --interval-sec 5`。
 
-```text
-2026-05-22T15:30:00Z QQQ signal alert: 1 strategy trigger(s), direction=buy_watch
-ma_cross_demo_2_3 | buy_watch | strength=0.70 | confidence=0.90 | MA2 crossed above MA3
-Run demo summary
-bars_read=5
-bars_used=5
-candidate_signals=1
-approved_signals=1
-rejected_signals=0
-notifications=2
-sqlite_path=<project-root>/data/runtime/stock_agent.sqlite
-```
+打开以下地址：
 
-### Step 4. Query Latest Signals
+- 工作台：`http://127.0.0.1:8000/`
+- OpenAPI 文档：`http://127.0.0.1:8000/api/docs`
+- 健康接口：`http://127.0.0.1:8000/api/v1/health`
 
-Purpose: Confirm that approved signals were persisted and can be queried.
+### 网页如何发起研究
+
+在工作台填写研究问题、标的代码、研究类型和回溯天数，点击“创建研究任务”。右侧会显示已提交的问题、Agent 步骤、证据缺口和最终报告。默认“离线示例”使用项目内的 `QQQ` 历史 CSV，因此没有行情密钥也可观察完整的数据收集流程；“近期实时数据”需要配置行情服务。它是异步研究任务界面：提交后必须有后台 Worker 执行，最终报告只会在证据和校验都完成后显示。
+
+### CLI 交互入口
 
 ```sh
-uv run stock-agent cli signals --limit 5
+.venv/bin/stock-agent cli
 ```
 
-Expected output:
+CLI 适合查询项目状态与只读数据，例如输入“你能做什么”“show health”或“show me latest QQQ signals”。网页与 CLI 一次只允许一个入口提交命令：若 CLI 提示待批准切换，请在网页底部“输入控制状态”中批准即可。完整研究报告应通过网页研究工作台提交，或使用 `stock-agent research submit` 传入符合 `ResearchRequest` 契约的 JSON。
 
-```text
-timestamp | signal_id | symbol | strategy_id | direction | strength | confidence | reason
-2026-05-22T15:30:00Z | sig-qqq-ma2-ma3-20260522T153000Z | QQQ | ma_cross_demo_2_3 | buy_watch | 0.70 | 0.90 | MA2 crossed above MA3
-```
+### 3. 用脚本提交研究任务
 
-### Step 5. Trace A Signal
-
-Purpose: Confirm that a signal can be traced to source bars and trace chain records.
+启动堆栈后，通过 FastAPI 提交一个研究任务。该脚本只创建任务，行情、新闻和模型调用由 Worker 按任务需求执行：
 
 ```sh
-uv run stock-agent cli trace sig-qqq-ma2-ma3-20260522T153000Z
+./scripts/submit_research_v2.sh \
+  --symbol QQQ \
+  --days 30 \
+  --question "结合近一个月的价格、成交量与新闻，分析 QQQ 的异动是否具备持续性，并列出证据不足之处。"
 ```
 
-Expected output:
+可追加 `--current-data` 请求近期数据，或使用 `--report-type facts|anomaly|macro|signal|full` 收窄任务。任务提交后在工作台查看步骤、证据缺口与最终报告。
 
-```text
-trace_status=ok
-signal_id=sig-qqq-ma2-ma3-20260522T153000Z
-trace_id=trace-sig-qqq-ma2-ma3-20260522T153000Z
-symbol=QQQ
-strategy_id=ma_cross_demo_2_3
-direction=buy_watch
-supervisor_decision=approved
-source_bar_ids=QQQ-30m-2026-05-22T14:30:00Z-demo_csv,QQQ-30m-2026-05-22T15:00:00Z-demo_csv,QQQ-30m-2026-05-22T15:30:00Z-demo_csv
-trace_module=strategy_engine
-trace_status=success
-```
-
-### Step 6. Run One Worker Tick
-
-Purpose: Verify that one worker tick can complete provider, strategy, supervisor, and health flows.
+它只处理用户提交的 V2 研究任务，不会自行持续盯盘或轮询外部行情。只想手动处理一次 V2 研究任务时：
 
 ```sh
-uv run stock-agent worker --once
+uv run stock-agent research work
 ```
 
-Expected output with the default config:
-
-```text
-worker_status=completed
-ticks=1
-errors=0
-last_tick_summary:
-tick_status=ok
-trading_day=true
-provider=csv_demo
-raw_bars=0
-prepared_bars=0
-candidate_signals=0
-approved_signals=0
-rejected_signals=0
-notifications=0
-lake_writes=0
-trace_count=3
-errors=0
-```
-
-To make the demo worker process QQQ, update config:
-
-```yaml
-symbols:
-  default:
-    - QQQ
-```
-
-### Step 7. Run Continuous Watch Mode
-
-Purpose: Keep the worker running at a fixed interval.
+只执行一个指定任务而不消费其他待执行任务时，追加任务 ID：
 
 ```sh
-uv run stock-agent worker --interval-sec 60
+uv run stock-agent research work TASK_ID
 ```
 
-Expected output shape:
+### 外部 API 额度
+
+V2 只在任务实际需要数据时请求外部服务。Twelve Data 的一分钟额度由 SQLite 统一预留，跨重启和多个 Worker 生效；默认不重试失败请求，因此单标的研究通常只产生一次行情请求。OpenRouter 遇到 `429` 也不会切换备用模型，以免消耗同一账户的额外额度；新任务默认最多 4 次模型调用。额度耗尽时任务会记录可追溯的证据缺口或明确的回退来源，不会持续重试。执行后请在任务诊断中确认 `provider_name=twelve_data`、`fallback_used=false`；若出现回退或额度不足，报告只能作为降级结果，不能当作 Twelve Data 验证结果。
+
+保留的 V1 市场监控仅在明确需要时启用。它会持续请求数据，应使用提供商配置的安全轮询间隔（默认 60 秒），不要与 V2 研究 Worker 混用：
+
+```sh
+uv run stock-agent worker --include-legacy-market-watch --interval-sec 60
+```
+
+## 研究任务使用方式
+
+### CLI 提交
+
+创建 `request.json`：
+
+```json
+{
+  "request_id": "qqq-facts-20260522",
+  "question": "生成 QQQ 在该时段的事实型研究报告。",
+  "symbols": ["QQQ"],
+  "time_window": {
+    "from_ts": "2026-05-22T13:30:00Z",
+    "to_ts": "2026-05-22T20:00:00Z",
+    "timezone": "America/New_York"
+  },
+  "report_type": "facts"
+}
+```
+
+提交、查看状态和获取最终报告：
+
+```sh
+uv run stock-agent research submit --request-file request.json
+uv run stock-agent research status TASK_ID
+uv run stock-agent research report TASK_ID --format markdown
+```
+
+支持的 `report_type`：`facts`、`anomaly`、`macro`、`signal`、`full`。
+
+### HTTP API 提交
+
+```sh
+curl -X POST http://127.0.0.1:8000/api/v2/research \
+  -H 'Content-Type: application/json' \
+  --data @- <<'JSON'
+{
+  "request": {
+    "request_id": "qqq-facts-api",
+    "question": "生成 QQQ 的事实型研究报告。",
+    "symbols": ["QQQ"],
+    "time_window": {
+      "from_ts": "2026-05-22T13:30:00Z",
+      "to_ts": "2026-05-22T20:00:00Z",
+      "timezone": "America/New_York"
+    },
+    "report_type": "facts"
+  }
+}
+JSON
+```
+
+后续调用：
 
 ```text
-worker_status=completed
-ticks=<tick-count>
-errors=0
-last_tick_summary:
-tick_status=ok
-provider=<provider-name>
-approved_signals=<count>
-notifications=<count>
+GET  /api/v2/research/{task_id}
+POST /api/v2/research/{task_id}/pause
+POST /api/v2/research/{task_id}/resume
+POST /api/v2/research/{task_id}/cancel
+GET  /api/v2/research/{task_id}/report
+GET  /api/v2/research/{task_id}/diagnostics
+GET  /api/v2/research/{task_id}/events
 ```
 
-### Step 8. Check Health
+`diagnostics` 会返回任务计划、步骤 Trace、Provider freshness、模型预算和成本估计。SSE `events` 可用于前端轮询之外的状态刷新。
 
-Purpose: Inspect provider, supervisor, notification, and worker status.
+## 离线与外部接口
+
+### 无密钥离线模式
+
+无需任何密钥即可启动页面、访问 API、使用 SQLite 历史数据，并在 Twelve Data 不可用时回退到 `data/sample/sample_bars.csv`。示例 CSV 覆盖 `QQQ` 在 2026-05-22 的 30 分钟数据，适合用于上述示例请求。
+
+没有模型密钥时，数据、新闻空证据和步骤 Trace 仍会正常持久化；报告步骤会写入明确的 `EvidenceGap`，并在 CLI/Web 的任务状态响应中展示，不会伪造 `FinalReport`。
+
+### 可选环境变量
+
+实时功能由环境变量提供，不要把密钥写入 Git：
+
+```sh
+# zsh / bash：每次提示输入后，在当前 shell 会话中导出变量。
+read -rs TWELVE_DATA_API_KEY && export TWELVE_DATA_API_KEY
+read -rs OPENROUTER_API_KEY && export OPENROUTER_API_KEY
+read -rs TELEGRAM_BOT_TOKEN && export TELEGRAM_BOT_TOKEN
+```
+
+| 能力 | 需要的配置 | 当前行为 |
+|---|---|---|
+| 实时行情 | `TWELVE_DATA_API_KEY` | Twelve Data 不可用时回退 CSV。 |
+| Agent 最终报告、宏观/信号发现推理 | `OPENROUTER_API_KEY` | 缺失时返回可追踪 `EvidenceGap`。 |
+| Telegram 入口 | `TELEGRAM_BOT_TOKEN` 和 `telegram.enabled: true` | 支持受控提交、状态查询和管理员审批。 |
+| 外部新闻 | `news` 配置和一个实现 `NewsProvider` 的接入 | 当前默认 `placeholder` 只产生空新闻证据，不会伪造新闻。 |
+
+配置 LLM 后需重启 Web/Worker 进程。模型只可在受限 Schema、证据引用和预算内工作，不能获得交易或审批权限。
+
+## 信号与安全边界
+
+- Agent 不能下单、调用券商或审批信号。
+- 新信号必须经过 Candidate AST 审查、隔离 Sandbox、时间切分验证和人工管理员审批。
+- 仅已审批的 Active Signal Version 可以在 Worker 中执行。
+- 新闻和 MCP 内容被视为不可信数据，不能改变系统权限或工具列表。
+- 只有通过 Evidence 和 Claim Validator 的 ReportDraft 才可变为 `FinalReport`。
+- 自动重试仅限 `bar`、`news`、`provider` 证据缺口；模型、MCP 和人工输入缺口会停止等待处理。
+
+## 常用命令
 
 ```sh
 uv run stock-agent health --verbose
-```
-
-Expected output:
-
-```text
-health_status=healthy
-module=run_demo
-data_latency_sec=0.0
-error_rate=0.0
-consecutive_failures=0
-alert_failures=0
-verbose_health_status=ok
-module | status
-provider_registry | healthy
-provider_compare | healthy
-supervisor | healthy
-worker | healthy
-provider_success_rate=1.0000
-provider_fallback_count=0
-abnormal_bar_count=0
-supervisor_intercept_count=0
-notification_pending=0
-notification_failed=0
-config_review_backlog=0
-recent_failed_traces=0
-```
-
-### Step 9. Check Telegram Entry Point
-
-Purpose: Confirm that the Telegram command entrypoint is installed and reports current status.
-
-```sh
-uv run stock-agent telegram
-```
-
-Expected output with default config:
-
-```text
-telegram_status=disabled
-reason=telegram.enabled is false
-```
-
-Expected output shape after enabling token:
-
-```text
-telegram_status=ready
-listener=long_polling
-workspace=<project-root>
-```
-
-### Step 10. Review Retention Dry-Run
-
-Purpose: Review cleanup scope without deleting files.
-
-```sh
-uv run stock-agent retention
-```
-
-Expected output shape:
-
-```text
-retention_status=ok
-dry_run=true
-executed=false
-affected_count=<count>
-action | dataset | path | reason
-```
-
-To execute retention actions explicitly:
-
-```sh
-uv run stock-agent retention --execute
-```
-
-## 5. Test Verification
-
-### Smoke Test
-
-Purpose: Quickly verify the main README commands and Telegram bot core.
-
-```sh
-uv run --extra dev pytest tests/test_deploy_validate.py tests/test_run_demo.py tests/test_query_cli.py tests/test_telegram_bot.py
-```
-
-Expected output:
-
-```text
-17 passed
-```
-
-### Full Test
-
-Purpose: Verify the full project.
-
-```sh
+uv run stock-agent run-demo
+stock-agent run-demo
+stock-agent deploy-validate
+uv run stock-agent worker --once
+uv run stock-agent research work
+uv run stock-agent research work TASK_ID
+uv run stock-agent research status TASK_ID
+uv run stock-agent mcp-server
 uv run --extra dev pytest
+PYTHONPATH=src:tests .venv/bin/python -m pytest -q
 ```
 
-Latest full verification result:
-
-```text
-313 passed, 1 xfailed
-```
-
-## 6. Common Commands
+## 测试与质量检查
 
 ```sh
-uv run stock-agent deploy-validate
-uv run stock-agent run-demo
-uv run stock-agent worker --once
-uv run stock-agent worker --interval-sec 60
-uv run stock-agent cli signals --limit 10
-uv run stock-agent cli trace sig-qqq-ma2-ma3-20260522T153000Z
-uv run stock-agent health --verbose
-uv run stock-agent telegram
-uv run stock-agent retention
-uv run python -c "from pathlib import Path; from stock_agent.commands.web import run_web; raise SystemExit(run_web(Path.cwd()))"
+PYTHONPATH=src:tests .venv/bin/python -m pytest -q
+git diff --check
 ```
 
-## 7. Safety Boundary
+当前 V2 发布回归结果：`461 passed, 1 skipped, 1 xfailed`。
 
-Stock Agent is a market-watch and signal-alert agent. It is not an automated trading system.
+## 免责声明
 
-Current safety boundaries:
-
-- Trading firewall blocks high-risk trading, account, and credential intents.
-- Message safety avoids guaranteed-return or auto-trading language.
-- LLM is only an intent parser, not a trading executor.
-- Config changes enter pending review and do not auto-apply.
-- Supervisor checks must review candidate signals.
-
-## 8. Disclaimer
-
-This project is for educational, research, and portfolio demonstration purposes only.
-It is not financial advice, investment advice, or an automated trading system.
-Signals generated by this project should not be used as the sole basis for trading decisions.
-
-Do not commit real API keys, Telegram tokens, broker credentials, account information, or other secrets.
-Use environment variables for all credentials and sensitive configuration.
-
-Live market data availability, latency, and quota depend on the configured provider and user entitlement.
-
-## 9. License
-
-This project is licensed under the MIT License. See `LICENSE` for details.
+本项目用于教育、研究和作品集展示，不构成投资建议、财务建议或自动交易系统。所有输出均应结合独立研究与风险判断使用。

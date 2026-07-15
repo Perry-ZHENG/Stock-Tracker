@@ -16,7 +16,7 @@ TaskTransition = Literal["pending", "running", "paused", "cancelled", "failed", 
 StepCompletionStatus = Literal["succeeded", "failed", "skipped", "cancelled"]
 
 _TASK_TRANSITIONS: dict[str, set[str]] = {
-    "pending": {"running", "cancelled"},
+    "pending": {"running", "cancelled", "failed"},
     "running": {"paused", "cancelled", "failed", "completed"},
     "paused": {"running", "cancelled"},
     "cancelled": set(),
@@ -54,8 +54,8 @@ class TaskRepository:
         payload = task.model_dump(mode="json")
         self.connection.execute(
             """
-            INSERT INTO agent_tasks (task_id, request_json, status, budget_json, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO agent_tasks (task_id, request_json, status, budget_json, created_at, execution_started_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task.task_id,
@@ -63,6 +63,7 @@ class TaskRepository:
                 task.status,
                 _json(payload["budget"]),
                 payload["created_at"],
+                payload["execution_started_at"],
                 payload["updated_at"],
             ),
         )
@@ -71,6 +72,21 @@ class TaskRepository:
     def get_task(self, task_id: str) -> AgentTask | None:
         row = self.connection.execute("SELECT * FROM agent_tasks WHERE task_id = ?", (task_id,)).fetchone()
         return _task_from_row(row) if row is not None else None
+
+    def list_tasks(self, *, statuses: tuple[TaskTransition, ...] | None = None) -> list[AgentTask]:
+        """Return durable tasks for a worker without exposing raw request JSON."""
+
+        if statuses is not None and not statuses:
+            return []
+        if statuses is None:
+            rows = self.connection.execute("SELECT * FROM agent_tasks ORDER BY created_at, task_id").fetchall()
+        else:
+            placeholders = ",".join("?" for _status in statuses)
+            rows = self.connection.execute(
+                f"SELECT * FROM agent_tasks WHERE status IN ({placeholders}) ORDER BY created_at, task_id",
+                statuses,
+            ).fetchall()
+        return [_task_from_row(row) for row in rows]
 
     def transition_task(
         self,
@@ -96,6 +112,26 @@ class TaskRepository:
         task = self.get_task(task_id)
         if task is None:
             raise RepositoryStateError(f"task {task_id} disappeared after transition")
+        return task
+
+    def start_execution_if_needed(self, task_id: str, *, started_at: datetime) -> AgentTask:
+        """Persist the budget clock exactly once when a running task is first worked."""
+
+        timestamp = _timestamp(started_at)
+        result = self.connection.execute(
+            """
+            UPDATE agent_tasks
+            SET execution_started_at = COALESCE(execution_started_at, ?), updated_at = ?
+            WHERE task_id = ? AND status = 'running'
+            """,
+            (timestamp, timestamp, task_id),
+        )
+        self.connection.commit()
+        if result.rowcount != 1:
+            raise RepositoryStateError(f"task {task_id} is not running")
+        task = self.get_task(task_id)
+        if task is None:
+            raise RepositoryStateError(f"task {task_id} disappeared after starting execution")
         return task
 
     def save_plan(self, plan: AgentPlan, *, created_at: datetime | None = None) -> None:
@@ -164,6 +200,20 @@ class TaskRepository:
         ).fetchone()
         return self.get_plan(row["plan_id"]) if row is not None else None
 
+    def list_steps(self, task_id: str, *, plan_id: str | None = None) -> list[AgentStep]:
+        """Load task-scoped steps in creation order for restart-safe adapters."""
+
+        if plan_id is None:
+            rows = self.connection.execute(
+                "SELECT * FROM agent_steps WHERE task_id = ? ORDER BY rowid", (task_id,)
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                "SELECT * FROM agent_steps WHERE task_id = ? AND plan_id = ? ORDER BY rowid",
+                (task_id, plan_id),
+            ).fetchall()
+        return [_step_from_row(row) for row in rows]
+
     def claim_next_step(
         self,
         task_id: str,
@@ -194,13 +244,14 @@ class TaskRepository:
                     """
                     UPDATE agent_steps
                     SET status = 'running', attempt = attempt + 1, claimed_by = ?, claimed_at = ?, updated_at = ?
-                    WHERE step_id = ? AND status = 'pending' AND attempt < max_attempts
+                    WHERE task_id = ? AND step_id = ? AND status = 'pending' AND attempt < max_attempts
                     """,
-                    (worker_id, timestamp, timestamp, row["step_id"]),
+                    (worker_id, timestamp, timestamp, task_id, row["step_id"]),
                 )
                 if updated.rowcount == 1:
                     claimed_row = self.connection.execute(
-                        "SELECT * FROM agent_steps WHERE step_id = ?", (row["step_id"],)
+                        "SELECT * FROM agent_steps WHERE task_id = ? AND step_id = ?",
+                        (task_id, row["step_id"]),
                     ).fetchone()
                     self.connection.commit()
                     return _step_from_row(claimed_row)
@@ -214,32 +265,47 @@ class TaskRepository:
         self,
         step_id: str,
         *,
+        task_id: str | None = None,
         expected_status: Literal["pending", "running"],
         new_status: StepCompletionStatus,
         updated_at: datetime,
     ) -> AgentStep:
         if new_status not in _STEP_TRANSITIONS[expected_status]:
             raise RepositoryStateError(f"step transition {expected_status} -> {new_status} is not allowed")
+        scoped_task_id = self._resolve_step_task_id(step_id, task_id)
         result = self.connection.execute(
             """
             UPDATE agent_steps
             SET status = ?, updated_at = ?
-            WHERE step_id = ? AND status = ?
+            WHERE task_id = ? AND step_id = ? AND status = ?
             """,
-            (new_status, _timestamp(updated_at), step_id, expected_status),
+            (new_status, _timestamp(updated_at), scoped_task_id, step_id, expected_status),
         )
         self.connection.commit()
         if result.rowcount != 1:
             raise RepositoryStateError(f"step {step_id} was not in expected state {expected_status}")
-        row = self.connection.execute("SELECT * FROM agent_steps WHERE step_id = ?", (step_id,)).fetchone()
+        row = self.connection.execute(
+            "SELECT * FROM agent_steps WHERE task_id = ? AND step_id = ?",
+            (scoped_task_id, step_id),
+        ).fetchone()
         if row is None:
             raise RepositoryStateError(f"step {step_id} disappeared after transition")
         return _step_from_row(row)
 
-    def record_step_failure(self, step_id: str, *, updated_at: datetime) -> AgentStep:
+    def record_step_failure(
+        self,
+        step_id: str,
+        *,
+        task_id: str | None = None,
+        updated_at: datetime,
+    ) -> AgentStep:
         """Requeue a running step while attempts remain, otherwise finish it as failed."""
 
-        row = self.connection.execute("SELECT * FROM agent_steps WHERE step_id = ?", (step_id,)).fetchone()
+        scoped_task_id = self._resolve_step_task_id(step_id, task_id)
+        row = self.connection.execute(
+            "SELECT * FROM agent_steps WHERE task_id = ? AND step_id = ?",
+            (scoped_task_id, step_id),
+        ).fetchone()
         if row is None or row["status"] != "running":
             raise RepositoryStateError(f"step {step_id} was not running")
         next_status = "pending" if row["attempt"] < row["max_attempts"] else "failed"
@@ -247,14 +313,17 @@ class TaskRepository:
             """
             UPDATE agent_steps
             SET status = ?, claimed_by = NULL, claimed_at = NULL, updated_at = ?
-            WHERE step_id = ? AND status = 'running'
+            WHERE task_id = ? AND step_id = ? AND status = 'running'
             """,
-            (next_status, _timestamp(updated_at), step_id),
+            (next_status, _timestamp(updated_at), scoped_task_id, step_id),
         )
         self.connection.commit()
         if result.rowcount != 1:
             raise RepositoryStateError(f"step {step_id} could not record failure")
-        updated = self.connection.execute("SELECT * FROM agent_steps WHERE step_id = ?", (step_id,)).fetchone()
+        updated = self.connection.execute(
+            "SELECT * FROM agent_steps WHERE task_id = ? AND step_id = ?",
+            (scoped_task_id, step_id),
+        ).fetchone()
         assert updated is not None
         return _step_from_row(updated)
 
@@ -299,9 +368,9 @@ class TaskRepository:
                     """
                     UPDATE agent_steps
                     SET status = ?, claimed_by = NULL, claimed_at = NULL, updated_at = ?
-                    WHERE step_id = ?
+                    WHERE task_id = ? AND step_id = ?
                     """,
-                    (next_status, timestamp, row["step_id"]),
+                    (next_status, timestamp, task_id, row["step_id"]),
                 )
             self.connection.commit()
         except sqlite3.Error:
@@ -372,15 +441,15 @@ class TaskRepository:
         """Persist the typed input needed to resume one runtime step after restart."""
 
         row = self.connection.execute(
-            "SELECT task_id FROM agent_steps WHERE step_id = ?", (step_id,)
+            "SELECT task_id FROM agent_steps WHERE task_id = ? AND step_id = ?", (task_id, step_id)
         ).fetchone()
-        if row is None or row["task_id"] != task_id:
+        if row is None:
             raise RepositoryStateError("step does not belong to the supplied task")
         self.connection.execute(
             """
             INSERT INTO agent_step_payloads (step_id, task_id, input_json, output_artifact_id, updated_at)
             VALUES (?, ?, ?, NULL, ?)
-            ON CONFLICT(step_id) DO UPDATE SET input_json = excluded.input_json, updated_at = excluded.updated_at
+            ON CONFLICT(task_id, step_id) DO UPDATE SET input_json = excluded.input_json, updated_at = excluded.updated_at
             """,
             (step_id, task_id, _json(payload), _timestamp(updated_at)),
         )
@@ -394,9 +463,9 @@ class TaskRepository:
 
     def record_step_output(self, task_id: str, step_id: str, *, artifact_id: str, updated_at: datetime) -> None:
         row = self.connection.execute(
-            "SELECT task_id FROM agent_step_payloads WHERE step_id = ?", (step_id,)
+            "SELECT task_id FROM agent_step_payloads WHERE task_id = ? AND step_id = ?", (task_id, step_id)
         ).fetchone()
-        if row is None or row["task_id"] != task_id:
+        if row is None:
             raise RepositoryStateError("a step output requires a persisted input for the same task")
         self.connection.execute(
             """
@@ -414,6 +483,19 @@ class TaskRepository:
             (task_id, step_id),
         ).fetchone()
         return str(row["output_artifact_id"]) if row is not None and row["output_artifact_id"] is not None else None
+
+    def _resolve_step_task_id(self, step_id: str, task_id: str | None) -> str:
+        """Require a task scope once more than one task can share a step name."""
+
+        if task_id is not None:
+            return task_id
+        rows = self.connection.execute(
+            "SELECT task_id FROM agent_steps WHERE step_id = ? ORDER BY rowid",
+            (step_id,),
+        ).fetchall()
+        if len(rows) != 1:
+            raise RepositoryStateError(f"task_id is required for non-unique step {step_id}")
+        return str(rows[0]["task_id"])
 
     def register_artifact(
         self,
@@ -539,6 +621,7 @@ def _task_from_row(row: sqlite3.Row) -> AgentTask:
         status=row["status"],
         budget=json.loads(row["budget_json"]),
         created_at=row["created_at"],
+        execution_started_at=row["execution_started_at"],
         updated_at=row["updated_at"],
     )
 

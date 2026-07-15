@@ -12,6 +12,7 @@ from stock_agent.providers.live import (
     LiveProviderLimits,
     create_live_provider,
 )
+from stock_agent.providers.synthetic_demo_v2 import SyntheticDemoProviderError, SyntheticDemoProviderV2
 from stock_agent.providers.registry import (
     ProviderAttempt,
     ProviderFetchResult,
@@ -36,6 +37,8 @@ __all__ = [
     "ProviderFetchResult",
     "ProviderRegistry",
     "ProviderRegistryError",
+    "SyntheticDemoProviderError",
+    "SyntheticDemoProviderV2",
     "TwelveDataProvider",
     "TwelveDataProviderError",
     "create_broker_market_data_provider",

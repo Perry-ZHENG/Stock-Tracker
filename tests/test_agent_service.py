@@ -11,6 +11,7 @@ from stock_agent.artifacts.service import ArtifactService
 from stock_agent.artifacts.store import ArtifactStore
 from stock_agent.contracts.common import StrictSchema, TimeWindow
 from stock_agent.contracts.tasks import ResearchRequest
+from stock_agent.agents.orchestrator import OrchestratorError
 from stock_agent.services.agent_service import AgentService, AgentServiceError
 from stock_agent.storage.sqlite import initialize_database
 from stock_agent.storage.task_repository import TaskRepository
@@ -63,6 +64,25 @@ def test_agent_service_cancels_open_steps_and_never_auto_approves(tmp_path: Path
     with pytest.raises(AgentServiceError, match="not configured"):
         service.approve(task.task_id, _approval_request(), now=NOW)
     connection.close()
+
+
+def test_agent_service_marks_a_task_failed_when_planning_cannot_start(tmp_path: Path) -> None:
+    connection = initialize_database(tmp_path / "runtime.sqlite")
+    healthy = _service(connection, tmp_path)
+    service = AgentService(connection, runtime=healthy.runtime, orchestrator=FailingOrchestrator())
+
+    with pytest.raises(AgentServiceError, match="planner is unavailable"):
+        service.submit(_request(), task_id="task-planning-failed", now=NOW)
+
+    task = TaskRepository(connection).get_task("task-planning-failed")
+    assert task is not None and task.status == "failed"
+    assert TaskRepository(connection).get_latest_plan(task.task_id) is None
+    connection.close()
+
+
+class FailingOrchestrator:
+    def start(self, *_args, **_kwargs):
+        raise OrchestratorError("planner is unavailable")
 
 
 def _service(connection, root: Path) -> AgentService:

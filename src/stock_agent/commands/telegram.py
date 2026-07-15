@@ -10,6 +10,7 @@ from typing import TextIO
 
 from stock_agent.config_loader import RuntimeConfigContext, load_config
 from stock_agent.services.entrypoints import ResearchEntryAdapter
+from stock_agent.services.production_v2 import ProductionV2Components, build_production_v2
 from stock_agent.storage.sqlite import initialize_runtime_database
 from stock_agent.telegram.bot import (
     TelegramBot,
@@ -49,6 +50,10 @@ def run_telegram(
     output.write("listener=long_polling\n")
     output.write(f"workspace={root}\n")
     output.flush()
+    owned_v2_components: ProductionV2Components | None = None
+    if research_entry is None:
+        owned_v2_components = build_production_v2(root, config_context=config_context)
+        research_entry = ResearchEntryAdapter(owned_v2_components.service)
     connection = initialize_runtime_database(root, config)
     bot = TelegramBot(
         root=root,
@@ -100,6 +105,8 @@ def run_telegram(
     finally:
         bot.input_gate.mark_offline("telegram")
         connection.close()
+        if owned_v2_components is not None:
+            owned_v2_components.close()
     return 0
 
 

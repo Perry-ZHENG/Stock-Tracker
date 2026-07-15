@@ -27,6 +27,7 @@ class EndToEndRegressionTests(unittest.TestCase):
                     "stock_agent.cli",
                     "worker",
                     "--once",
+                    "--include-legacy-market-watch",
                     "--interval-sec",
                     "0.01",
                     "--config",

@@ -96,6 +96,60 @@ def test_report_agent_blocks_unknown_references_invented_numbers_and_final_statu
     connection.close()
 
 
+def test_report_agent_repairs_an_ungrounded_numeric_claim_once(tmp_path: Path) -> None:
+    connection, service, reference, artifact = _fixture(tmp_path)
+    invalid = _draft_payload("facts", reference, text="QQQ closed at 999.0 on 2027-01-02.")
+    repaired = _draft_payload("facts", reference, text="QQQ has verified market evidence in the requested window.")
+    model = SequenceModel([invalid, repaired])
+
+    result = ReportAgent(model_client=model, artifact_service=service).draft(
+        _input("facts", reference, artifact),
+        draft_id="draft-repaired",
+        now=NOW,
+    )
+
+    assert result.draft_id == "draft-repaired"
+    assert result.claims[0].text == "QQQ has verified market evidence in the requested window."
+    assert len(model.prompts) == 2
+    assert "previous draft was rejected" in model.prompts[1]
+    connection.close()
+
+
+def test_report_agent_repairs_an_unqualified_causal_claim_once(tmp_path: Path) -> None:
+    connection, service, reference, artifact = _fixture(tmp_path)
+    invalid = _draft_payload("facts", reference, text="QQQ rose because market evidence improved.")
+    repaired = _draft_payload("facts", reference, text="QQQ movement may be associated with the verified market evidence.")
+    model = SequenceModel([invalid, repaired])
+
+    result = ReportAgent(model_client=model, artifact_service=service).draft(
+        _input("facts", reference, artifact),
+        draft_id="draft-causal-repaired",
+        now=NOW,
+    )
+
+    assert result.draft_id == "draft-causal-repaired"
+    assert result.claims[0].text == "QQQ movement may be associated with the verified market evidence."
+    assert "Do not claim causation" in model.prompts[1]
+    connection.close()
+
+
+def test_report_agent_normalizes_duplicate_and_missing_section_claim_ids(tmp_path: Path) -> None:
+    connection, service, reference, artifact = _fixture(tmp_path)
+    payload = _draft_payload("facts", reference, text="QQQ has verified market evidence in the requested window.")
+    payload["sections"][0]["claim_ids"] = ["claim-1", "claim-1"]
+    payload["sections"][1]["claim_ids"] = []
+
+    result = ReportAgent(model_client=ScriptedModel(payload), artifact_service=service).draft(
+        _input("facts", reference, artifact),
+        draft_id="draft-normalized",
+        now=NOW,
+    )
+
+    assert result.sections[0].claim_ids == ["claim-1"]
+    assert result.sections[1].claim_ids == []
+    connection.close()
+
+
 class ScriptedModel:
     def __init__(self, payload: dict[str, object]) -> None:
         self.payload = payload
@@ -104,6 +158,16 @@ class ScriptedModel:
     def __call__(self, prompt: str) -> str:
         self.prompts.append(prompt)
         return json.dumps(self.payload)
+
+
+class SequenceModel:
+    def __init__(self, payloads: list[dict[str, object]]) -> None:
+        self.payloads = payloads
+        self.prompts: list[str] = []
+
+    def __call__(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return json.dumps(self.payloads[len(self.prompts) - 1])
 
 
 def _fixture(tmp_path: Path):

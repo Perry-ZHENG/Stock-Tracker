@@ -23,7 +23,8 @@ def build_langchain_client(
 
     if not config.enabled:
         return None
-    env = environ or os.environ
+    # An explicit empty mapping is a deliberate offline/test environment.
+    env = os.environ if environ is None else environ
     api_key = env.get(config.api_key_env)
     if not api_key:
         return None
@@ -55,6 +56,9 @@ def build_langchain_client(
         try:
             response = model.invoke(prompt)
         except Exception as exc:
+            # A 429 is an account-level quota signal. Trying a fallback model
+            # may consume the same provider allowance, so do not issue another
+            # external request when the primary model has been rate limited.
             if fallback_model is None or not _is_retryable_provider_error(exc):
                 raise
             response = fallback_model.invoke(prompt)
@@ -68,12 +72,12 @@ def build_langchain_client(
 
 def _is_retryable_provider_error(exc: Exception) -> bool:
     status_code = getattr(exc, "status_code", None)
-    if status_code in {429, 502, 503, 504}:
+    if status_code in {502, 503, 504}:
         return True
     message = str(exc).lower()
     return any(
         marker in message
-        for marker in ("429", "rate limit", "temporarily unavailable", "provider returned error")
+        for marker in ("temporarily unavailable", "provider returned error", "bad gateway", "service unavailable")
     )
 
 

@@ -28,7 +28,7 @@ from stock_agent.supervisor.provider_compare import (
 from stock_agent.tracing import utc_now
 from stock_agent.research.features import compute_market_features
 
-V2_READ_ONLY_PROVIDER_NAMES = frozenset({"csv_demo", "twelve_data", "twelvedata", "live", "alpha_vantage"})
+V2_READ_ONLY_PROVIDER_NAMES = frozenset({"csv_demo", "synthetic_demo", "twelve_data", "twelvedata", "live", "alpha_vantage"})
 
 
 class DataEvidenceFailure(StrictSchema):
@@ -100,17 +100,28 @@ class DataEvidenceWorkflow:
                 end=request.time_window.to_ts,
             )
         except ProviderRegistryError as exc:
+            rate_limited = "credit budget exhausted" in str(exc).casefold()
             return DataEvidenceFailure(
                 code="provider_failed",
                 message=str(exc),
                 quality=DataQuality(status="unavailable", flags=["provider_unavailable"]),
-                retryable=True,
+                # Retrying during the same quota window only burns Worker time;
+                # preserve the gap for a later, explicit user retry instead.
+                retryable=not rate_limited,
             )
         if not fetched.bars:
             return DataEvidenceFailure(
                 code="empty_result",
                 message="providers returned no bars for the requested window",
                 quality=DataQuality(status="unavailable", flags=["empty_provider_result"]),
+                attempts=_attempts_payload(fetched),
+                retryable=False,
+            )
+        if fetched.provider_name == "synthetic_demo" and request.freshness_seconds > 0:
+            return DataEvidenceFailure(
+                code="provider_failed",
+                message="synthetic demo data cannot satisfy a current-data request",
+                quality=DataQuality(status="unavailable", flags=["synthetic_data_rejected_for_current_request"]),
                 attempts=_attempts_payload(fetched),
                 retryable=False,
             )
@@ -177,7 +188,14 @@ class DataEvidenceWorkflow:
             created_at=active_now,
         )
         observed_at = max(bar.timestamp for bar in clean_bars)
-        valid_until = observed_at + timedelta(seconds=request.freshness_seconds)
+        # Historical research must remain reproducible after the live-data
+        # freshness window has elapsed. Only requests that explicitly carry a
+        # positive freshness requirement expire their evidence references.
+        valid_until = (
+            observed_at + timedelta(seconds=request.freshness_seconds)
+            if request.freshness_seconds > 0
+            else None
+        )
         evidence_refs = [
             self._get_or_create_evidence(
                 task_id,
@@ -318,12 +336,14 @@ def _quality_flags(
         flags.append(f"missing_symbols:{','.join(missing_symbols)}")
     if fetched.fallback_used:
         flags.append("provider_fallback_used")
+    if fetched.provider_name == "synthetic_demo":
+        flags.append("synthetic_demo_data")
     if rejected:
         flags.append(f"invalid_bars:{len(rejected)}")
     if quarantined:
         flags.append(f"quarantined_bars:{len(quarantined)}")
     latest = max(bar.timestamp for bar in bars)
-    if now - latest > timedelta(seconds=request.freshness_seconds):
+    if request.freshness_seconds > 0 and now - latest > timedelta(seconds=request.freshness_seconds):
         flags.append("stale_data")
     return flags
 

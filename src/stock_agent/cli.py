@@ -21,6 +21,7 @@ from stock_agent.commands.retention import run_retention
 from stock_agent.commands.run_demo import run_demo
 from stock_agent.commands.telegram import run_telegram
 from stock_agent.commands.trace import run_trace_query
+from stock_agent.commands.web import run_web
 from stock_agent.commands.worker import run_worker
 from stock_agent.config import init_config
 from stock_agent.config_loader import load_config
@@ -30,13 +31,16 @@ from stock_agent.dialog.input_gate import InputGate
 from stock_agent.reports.renderers import render_report
 from stock_agent.services.agent_service import AgentService
 from stock_agent.services.entrypoints import ResearchEntryAdapter, ResearchEntryError
+from stock_agent.services.production_v2 import ProductionV2Components, build_production_v2
 from stock_agent.storage.sqlite import initialize_runtime_database
+from stock_agent.worker.research_v2 import ResearchTaskWorkerV2
 
 COMMANDS: dict[str, str] = {
     "init-config": "Generate default configs/config.yaml and .env.example.",
     "run-demo": "Run the offline CSV demo flow end to end.",
     "cli": "Start interactive CLI query and review mode.",
     "telegram": "Start the Telegram bot listener.",
+    "web": "Start the local FastAPI API and embedded web workbench.",
     "worker": "Start background data, strategy, signal, and health workers.",
     "health": "Print current system health and recent errors.",
     "replay": "Replay historical bars from the lake and recalculate signals.",
@@ -131,6 +135,17 @@ def _handle_worker(args: argparse.Namespace) -> int:
         root,
         once=args.once,
         interval_sec=args.interval_sec,
+        config_context=load_config(root, _argument_config_path(root, args)),
+        include_legacy_market_watch=args.include_legacy_market_watch,
+    )
+
+
+def _handle_web(args: argparse.Namespace) -> int:
+    root = _runtime_root()
+    return run_web(
+        root,
+        host=args.host,
+        port=args.port,
         config_context=load_config(root, _argument_config_path(root, args)),
     )
 
@@ -234,13 +249,12 @@ def _handle_mcp_server(_args: argparse.Namespace) -> int:
 def _handle_research(args: argparse.Namespace) -> int:
     entry = getattr(args, "research_entry", None)
     if entry is None:
-        print("research_status=unavailable\nmessage=V2 AgentService is not configured")
-        return 2
+        raise RuntimeError("V2 research entry was not initialized")
 
     root = _runtime_root()
     config_context = load_config(root)
     action = args.action
-    if action != "submit" and not args.task_id:
+    if action not in {"submit", "work"} and not args.task_id:
         print(f"research_status=failed\nmessage=research {action} requires TASK_ID")
         return 2
     if action == "input" and (not args.step_id or not args.payload_json):
@@ -248,7 +262,7 @@ def _handle_research(args: argparse.Namespace) -> int:
         return 2
     connection = initialize_runtime_database(root, config_context.config)
     actor_ref = "cli:one-shot"
-    requires_input = action in {"submit", "input", "pause", "resume", "cancel", "approve-signal"}
+    requires_input = action in {"submit", "input", "pause", "resume", "cancel", "retry-report", "approve-signal"}
     try:
         if requires_input:
             decision = InputGate.from_config(connection, config_context.config.input_control).check(
@@ -267,11 +281,19 @@ def _handle_research(args: argparse.Namespace) -> int:
             )
             _print_research_status(status, action="submitted")
             return 0
+        if action == "work":
+            worker = ResearchTaskWorkerV2(entry.service, worker_id="cli:research-work")
+            tick = worker.run_task(args.task_id) if args.task_id else worker.run_once()
+            print(f"research_worker_tasks={len(tick.task_ids)}")
+            print(f"research_worker_steps={tick.executed_steps}")
+            print(f"research_worker_replans={tick.replans}")
+            print(f"research_worker_errors={len(tick.errors)}")
+            return 0 if not tick.errors else 1
         if action in {"status", "watch"}:
             status = entry.status(args.task_id, source="cli", actor_ref=actor_ref)
             _print_research_status(status, action=action)
             return 0
-        if action in {"pause", "resume", "cancel"}:
+        if action in {"pause", "resume", "cancel", "retry-report"}:
             status = entry.control(args.task_id, action, source="cli", actor_ref=actor_ref)
             _print_research_status(status, action=action)
             return 0
@@ -436,6 +458,25 @@ def build_parser() -> argparse.ArgumentParser:
             subparser.set_defaults(handler=_handle_cli_query)
         elif command == "telegram":
             subparser.set_defaults(handler=_handle_telegram)
+        elif command == "web":
+            subparser.add_argument(
+                "--host",
+                default="127.0.0.1",
+                help="Interface to bind; use 127.0.0.1 for local-only access.",
+            )
+            subparser.add_argument(
+                "--port",
+                type=int,
+                default=8000,
+                help="TCP port for the web workbench.",
+            )
+            subparser.add_argument(
+                "--config",
+                dest="config_path",
+                type=Path,
+                help="Runtime config path for this web invocation.",
+            )
+            subparser.set_defaults(handler=_handle_web)
         elif command == "worker":
             subparser.add_argument(
                 "--once",
@@ -453,6 +494,11 @@ def build_parser() -> argparse.ArgumentParser:
                 dest="config_path",
                 type=Path,
                 help="Runtime config path for this worker invocation.",
+            )
+            subparser.add_argument(
+                "--include-legacy-market-watch",
+                action="store_true",
+                help="Also run the V1 continuous market-watch pipeline; disabled by default for V2 research.",
             )
             subparser.set_defaults(handler=_handle_worker)
         elif command == "replay":
@@ -497,13 +543,13 @@ def build_parser() -> argparse.ArgumentParser:
         elif command == "research":
             subparser.add_argument(
                 "action",
-                choices=("submit", "status", "watch", "pause", "resume", "cancel", "input", "report", "approve-signal"),
+                choices=("submit", "work", "status", "watch", "pause", "resume", "cancel", "retry-report", "input", "report", "approve-signal"),
                 help="V2 research task action.",
             )
             subparser.add_argument(
                 "task_id",
                 nargs="?",
-                help="Task id for every action except submit.",
+                help="Task id for task actions; optional for work, which otherwise drains all running tasks.",
             )
             subparser.add_argument(
                 "--request-json",
@@ -551,13 +597,21 @@ def main(
     # main function to parse arguments and call the appropriate handler
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command in {"cli", "research", "telegram"} and v2_agent_service is not None:
+    owned_components: ProductionV2Components | None = None
+    if args.command in {"cli", "research", "telegram"}:
+        if v2_agent_service is None:
+            owned_components = build_production_v2(_runtime_root())
+            v2_agent_service = owned_components.service
         args.research_entry = ResearchEntryAdapter(v2_agent_service)
     handler = getattr(args, "handler", None)
     if handler is None:
         parser.print_help()
         return 0
-    return handler(args)
+    try:
+        return handler(args)
+    finally:
+        if owned_components is not None:
+            owned_components.close()
 
 
 if __name__ == "__main__":

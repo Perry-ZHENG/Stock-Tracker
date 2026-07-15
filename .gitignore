@@ -20,6 +20,9 @@ venv/
 # Runtime data
 logs/
 data/runtime/
+data/lake/artifacts/
+data/lake/raw_bars/
+data/analytics/
 *.sqlite
 *.sqlite3
 *.duckdb
@@ -37,3 +40,6 @@ build/
 
 # Presentation/reporting artifacts
 presentation/
+
+# Local runtime overrides; keep committed config free of credentials.
+configs/*.local.yaml
