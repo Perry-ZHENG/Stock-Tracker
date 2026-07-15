@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -14,9 +14,6 @@ from stock_agent.contracts.evidence import (
     EvidenceRef,
     NewsEvidence,
 )
-if TYPE_CHECKING:
-    from stock_agent.schemas import Signal
-
 SignalLabel = Literal["positive", "negative", "neutral", "uncertain"]
 SignalVersionStatus = Literal["draft", "validating", "validated", "active", "suspended", "retired"]
 ValidationDecision = Literal["pass", "revise", "reject"]
@@ -214,33 +211,6 @@ class SignalObservation(StrictSchema):
     @classmethod
     def _normalize_datetime(cls, value: datetime) -> datetime:
         return ensure_utc(value)  # type: ignore[return-value]
-
-    @classmethod
-    def from_legacy_signal(
-        cls,
-        signal: "Signal",
-        *,
-        version: int,
-        evidence_refs: list[EvidenceRef],
-    ) -> "SignalObservation":
-        """Map old watch semantics to non-trading research labels."""
-        labels: dict[str, SignalLabel] = {
-            "buy_watch": "positive",
-            "sell_watch": "negative",
-            "observe": "neutral",
-        }
-        return cls(
-            signal_id=signal.signal_id,
-            version=version,
-            symbol=signal.symbol,
-            timestamp=signal.timestamp,
-            label=labels[signal.direction],
-            strength=signal.strength,
-            confidence=signal.confidence,
-            reason=signal.reason,
-            evidence_refs=evidence_refs,
-        )
-
 
 __all__ = [
     "CandidateFunction",

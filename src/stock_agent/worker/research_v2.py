@@ -7,39 +7,31 @@ from datetime import UTC, datetime
 
 from stock_agent.contracts.evidence import EvidenceGapRequest
 from stock_agent.services.agent_service import AgentService, AgentServiceError
-from stock_agent.worker.pipeline import WorkerTickSummary
-
-
-class ResearchWorkerPipelineV2:
-    """Run durable research work before one legacy market-watch pipeline tick."""
-
-    def __init__(
-        self,
-        *,
-        research_worker: "ResearchTaskWorkerV2",
-        legacy_pipeline=None,
-    ) -> None:
-        self.research_worker = research_worker
-        self.legacy_pipeline = legacy_pipeline
-
-    def run_once(self):
-        research_tick = self.research_worker.run_once()
-        if self.legacy_pipeline is not None:
-            return self.legacy_pipeline.run_once()
-        return WorkerTickSummary(
-            status="research_only",
-            trading_day=True,
-            provider="not_polled",
-            errors=research_tick.errors,
-        )
-
-
 @dataclass(frozen=True)
 class ResearchWorkerTickV2:
     task_ids: list[str] = field(default_factory=list)
     executed_steps: int = 0
     replans: int = 0
     errors: list[str] = field(default_factory=list)
+
+    def lines(self) -> list[str]:
+        return [
+            "tick_status=research",
+            f"tasks={len(self.task_ids)}",
+            f"executed_steps={self.executed_steps}",
+            f"replans={self.replans}",
+            f"errors={len(self.errors)}",
+        ]
+
+
+class ResearchWorkerPipelineV2:
+    """Run one durable V2 research-task tick without market-watch side effects."""
+
+    def __init__(self, *, research_worker: "ResearchTaskWorkerV2") -> None:
+        self.research_worker = research_worker
+
+    def run_once(self) -> ResearchWorkerTickV2:
+        return self.research_worker.run_once()
 
 
 class ResearchTaskWorkerV2:

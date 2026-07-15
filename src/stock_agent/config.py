@@ -21,14 +21,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "priority": ["twelve_data"],
         "fallback": {
             "enabled": True,
-            "order": ["csv_demo"],
-        },
-        "csv_demo": {
-            "path": "data/sample/sample_bars.csv",
-        },
-        "live": {
-            "name": "placeholder",
-            "api_key_env": "MARKET_DATA_API_KEY",
+            "order": ["synthetic_demo"],
         },
         "twelve_data": {
             "api_key_env": "TWELVE_DATA_API_KEY",
@@ -44,49 +37,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "symbols": {
         "default": ["AAPL", "MSFT", "NVDA"],
-    },
-    "bar": {
-        "interval": "30m",
-        "session": "regular_only",
-        "include_pre_market": False,
-        "include_after_hours": False,
-    },
-    "schedule": {
-        "timezone": "America/New_York",
-        "regular_session_start": "09:30",
-        "regular_session_end": "16:00",
-        "premarket_lead_minutes": 60,
-        "close_focus_window_minutes": 60,
-        "afterhours_tail_minutes": 60,
-    },
-    "strategies": {
-        "ma_cross": {
-            "enabled": True,
-            "pairs": [[3, 5], [5, 10], [10, 20]],
-        },
-        "boll": {
-            "enabled": True,
-            "window": 20,
-            "bandwidth_baseline_window": 20,
-        },
-        "macd": {
-            "enabled": False,
-            "fast": 12,
-            "slow": 26,
-            "signal": 9,
-        },
-        "kdj": {
-            "enabled": False,
-            "window": 9,
-        },
-        "active_j": {
-            "enabled": False,
-            "j_threshold": 20.0,
-            "ma_window": 80,
-            "kdj_window": 9,
-            "k_smoothing": 3,
-            "d_smoothing": 3,
-        },
     },
     "telegram": {
         "enabled": False,
@@ -134,11 +84,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 DEFAULT_ENV_EXAMPLE = """TWELVE_DATA_API_KEY=
-MARKET_DATA_API_KEY=
 TELEGRAM_BOT_TOKEN=
 NEWS_API_KEY=
 OPENAI_API_KEY=
 OPENROUTER_API_KEY=
+GEMINI_API_KEY=
 """
 
 
@@ -146,15 +96,6 @@ class AppConfig(BaseModel):
     name: str
     env: str
     timezone: str
-
-
-class CsvDemoProviderConfig(BaseModel):
-    path: str
-
-
-class LiveProviderConfig(BaseModel):
-    name: str
-    api_key_env: str
 
 
 class TwelveDataProviderConfig(BaseModel):
@@ -169,15 +110,13 @@ class TwelveDataProviderConfig(BaseModel):
 
 class ProviderFallbackConfig(BaseModel):
     enabled: bool = True
-    order: list[str] = Field(default_factory=lambda: ["csv_demo"])
+    order: list[str] = Field(default_factory=lambda: ["synthetic_demo"])
 
 
 class ProviderConfig(BaseModel):
     default: str
     priority: list[str] = Field(default_factory=list)
     fallback: ProviderFallbackConfig = Field(default_factory=ProviderFallbackConfig)
-    csv_demo: CsvDemoProviderConfig
-    live: LiveProviderConfig
     twelve_data: TwelveDataProviderConfig = Field(
         default_factory=lambda: TwelveDataProviderConfig.model_validate(
             DEFAULT_CONFIG["provider"]["twelve_data"]
@@ -187,64 +126,6 @@ class ProviderConfig(BaseModel):
 
 class SymbolsConfig(BaseModel):
     default: list[str] = Field(min_length=1)
-
-
-class BarConfig(BaseModel):
-    interval: str
-    session: Literal["regular_only"]
-    include_pre_market: bool
-    include_after_hours: bool
-
-
-class ScheduleConfig(BaseModel):
-    timezone: str = "America/New_York"
-    regular_session_start: str = "09:30"
-    regular_session_end: str = "16:00"
-    premarket_lead_minutes: int = Field(ge=0)
-    close_focus_window_minutes: int = Field(ge=0)
-    afterhours_tail_minutes: int = Field(ge=0)
-
-
-class MaCrossConfig(BaseModel):
-    enabled: bool
-    pairs: list[tuple[int, int]]
-
-
-class BollConfig(BaseModel):
-    enabled: bool
-    window: int = Field(gt=0)
-    bandwidth_baseline_window: int = Field(gt=0)
-
-
-class MacdConfig(BaseModel):
-    enabled: bool
-    fast: int = Field(gt=0)
-    slow: int = Field(gt=0)
-    signal: int = Field(gt=0)
-
-
-class KdjConfig(BaseModel):
-    enabled: bool
-    window: int = Field(gt=0)
-    k_smoothing: int = Field(default=3, gt=0)
-    d_smoothing: int = Field(default=3, gt=0)
-
-
-class ActiveJConfig(BaseModel):
-    enabled: bool
-    j_threshold: float = Field(ge=0)
-    ma_window: int = Field(gt=0)
-    kdj_window: int = Field(gt=0)
-    k_smoothing: int = Field(gt=0)
-    d_smoothing: int = Field(gt=0)
-
-
-class StrategiesConfig(BaseModel):
-    ma_cross: MaCrossConfig
-    boll: BollConfig
-    macd: MacdConfig
-    kdj: KdjConfig
-    active_j: ActiveJConfig = Field(default_factory=lambda: ActiveJConfig.model_validate(DEFAULT_CONFIG["strategies"]["active_j"]))
 
 
 class TelegramConfig(BaseModel):
@@ -300,9 +181,6 @@ class StockAgentConfig(BaseModel):
     app: AppConfig
     provider: ProviderConfig
     symbols: SymbolsConfig
-    bar: BarConfig
-    schedule: ScheduleConfig = Field(default_factory=lambda: ScheduleConfig.model_validate(DEFAULT_CONFIG["schedule"]))
-    strategies: StrategiesConfig
     telegram: TelegramConfig
     input_control: InputControlConfig = Field(
         default_factory=lambda: InputControlConfig.model_validate(

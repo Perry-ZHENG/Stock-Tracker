@@ -28,7 +28,7 @@ from stock_agent.supervisor.provider_compare import (
 from stock_agent.tracing import utc_now
 from stock_agent.research.features import compute_market_features
 
-V2_READ_ONLY_PROVIDER_NAMES = frozenset({"csv_demo", "synthetic_demo", "twelve_data", "twelvedata", "live", "alpha_vantage"})
+V2_READ_ONLY_PROVIDER_NAMES = frozenset({"synthetic_demo", "twelve_data", "twelvedata"})
 
 
 class DataEvidenceFailure(StrictSchema):
@@ -48,9 +48,9 @@ class DataEvidenceWorkflowError(RuntimeError):
 class DataEvidenceWorkflow:
     """Turn an explicit market-data request into bounded references and summaries.
 
-    The workflow deliberately reuses the legacy ProviderRegistry, BarBuilder and
-    quarantine path. It never calls a model and never exposes a source path to
-    the Agent-facing output.
+    The workflow uses the read-only V2 provider registry and deterministic bar
+    validation. It never calls a model and never exposes a source path to the
+    Agent-facing output.
     """
 
     def __init__(

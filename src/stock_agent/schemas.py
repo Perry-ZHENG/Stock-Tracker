@@ -3,14 +3,13 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import Field, field_validator
 
 from stock_agent.contracts.common import StrictSchema, ensure_utc
 
-Direction = Literal["buy_watch", "sell_watch", "observe"]
 TraceStatus = Literal["success", "skipped", "failed"]
 
 
@@ -39,28 +38,8 @@ class Bar(StrictSchema):
         return _ensure_utc(value)  # type: ignore[return-value]
 
 
-class Signal(StrictSchema):
-    signal_id: str
-    strategy_id: str
-    symbol: str
-    timestamp: datetime
-    direction: Direction = "observe"
-    strength: float = Field(ge=0, le=1)
-    confidence: float = Field(ge=0, le=1)
-    reason: str
-    trace_id: str
-    source_bar_ids: list[str] = Field(default_factory=list)
-    data_quality: str = "normal"
-    created_at: datetime
-
-    @field_validator("timestamp", "created_at")
-    @classmethod
-    def _datetime_to_utc(cls, value: datetime) -> datetime:
-        return _ensure_utc(value)  # type: ignore[return-value]
-
-
 class TraceChain(StrictSchema):
-    # Represents a chain of operations for a given strategy execution, useful for debugging and audit trails
+    """A durable audit trace for a provider, tool, model, or Agent action."""
     trace_id: str
     parent_id: str | None = None
     module: str
@@ -68,22 +47,6 @@ class TraceChain(StrictSchema):
     output_ref: list[Any] | dict[str, Any] = Field(default_factory=list)
     status: TraceStatus = "success"
     error_msg: str | None = None
-    created_at: datetime
-
-    @field_validator("created_at")
-    @classmethod
-    def _created_at_to_utc(cls, value: datetime) -> datetime:
-        return _ensure_utc(value)  # type: ignore[return-value]
-
-
-class StrategySnapshot(StrictSchema):
-    snapshot_id: str
-    date: date
-    enabled_strategies: list[str] = Field(default_factory=list)
-    strategy_params: dict[str, Any] = Field(default_factory=dict)
-    symbols: list[str] = Field(default_factory=list)
-    data_policy: dict[str, Any] = Field(default_factory=dict)
-    watch_window: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
     @field_validator("created_at")
@@ -130,9 +93,7 @@ class HealthMetric(StrictSchema):
 
 __all__ = [
     "Bar",
-    "Signal",
     "TraceChain",
-    "StrategySnapshot",
     "NewsItem",
     "HealthMetric",
 ]

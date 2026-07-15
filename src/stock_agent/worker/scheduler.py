@@ -7,12 +7,10 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from stock_agent.health import HealthThresholds, record_health_metric
-from stock_agent.tracing import utc_now
 from stock_agent.worker.identity import WorkerIdentity, build_worker_identity
-from stock_agent.worker.pipeline import WorkerPipeline, WorkerTickSummary
+from stock_agent.worker.research_v2 import ResearchWorkerPipelineV2, ResearchWorkerTickV2
 from stock_agent.worker.recovery import CrashBudgetExceeded, CrashRecoveryManager
 
 
@@ -105,14 +103,14 @@ class WorkerRunResult:
     ticks: int
     stopped: bool
     errors: list[str] = field(default_factory=list)
-    summaries: list[WorkerTickSummary] = field(default_factory=list)
+    summaries: list[ResearchWorkerTickV2] = field(default_factory=list)
 
 
 class Worker:
     """Minimal worker loop.
 
-    Future tasks can attach market-data polling, strategy execution, notification,
-    crash recovery, and gap filling behind the placeholder hooks below.
+    This process only drains durable V2 research tasks. It never polls markets
+    continuously and never executes trading or formula-strategy code.
     """
 
     def __init__(
@@ -122,10 +120,9 @@ class Worker:
         lock_path: Path,
         interval_sec: float = 30,
         thresholds: HealthThresholds | None = None,
-        pipeline: WorkerPipeline | None = None,
+        pipeline: ResearchWorkerPipelineV2,
         recovery_manager: CrashRecoveryManager | None = None,
         identity: WorkerIdentity | None = None,
-        research_tick: Callable[[str], object] | None = None,
     ) -> None:
         self.connection = connection
         self.lock_path = lock_path
@@ -134,9 +131,6 @@ class Worker:
         self.pipeline = pipeline
         self.recovery_manager = recovery_manager or CrashRecoveryManager(connection)
         self.identity = identity or build_worker_identity()
-        # Research Agent work is deliberately invoked by a separate scheduler,
-        # never inside the latency-sensitive market-data tick below.
-        self.research_tick = research_tick
         self._stop_requested = False
 
     def request_stop(self) -> None:
@@ -150,14 +144,13 @@ class Worker:
     ) -> WorkerRunResult:
         ticks = 0
         errors: list[str] = []
-        summaries: list[WorkerTickSummary] = []
+        summaries: list[ResearchWorkerTickV2] = []
         with SingleInstanceLock(self.lock_path, identity=self.identity):
             try:
                 self.recover_from_crash()
             except CrashBudgetExceeded as exc:
                 errors.append(str(exc))
                 return WorkerRunResult(ticks=ticks, stopped=True, errors=errors, summaries=summaries)
-            self.fill_data_gaps()
             while not self._stop_requested:
                 try:
                     summaries.append(self.tick())
@@ -177,7 +170,7 @@ class Worker:
                         error_rate=1,
                         consecutive_failures=len(errors),
                         core_module_running=True,
-                details={"error": str(exc)},
+                        details={"error": str(exc)},
                         thresholds=self.thresholds,
                     )
                 if once or (max_ticks is not None and ticks >= max_ticks):
@@ -185,39 +178,13 @@ class Worker:
                 time.sleep(self.interval_sec)
         return WorkerRunResult(ticks=ticks, stopped=self._stop_requested, errors=errors, summaries=summaries)
 
-    def tick(self) -> WorkerTickSummary:
-        if self.pipeline is not None:
-            summary = self.pipeline.run_once()
-            if summary.status == "research_only":
-                self._record_research_only_health(summary)
-            return summary
+    def tick(self) -> ResearchWorkerTickV2:
+        summary = self.pipeline.run_once()
+        self._record_research_health(summary)
+        return summary
 
-        now = utc_now()
-        record_health_metric(
-            self.connection,
-            module="worker",
-            heartbeat_at=now,
-            data_latency_sec=0,
-            error_rate=0,
-            consecutive_failures=0,
-            alert_failures=0,
-            core_module_running=True,
-            details={
-                "loop": "skeleton",
-                "crash_recovery": "placeholder",
-                "gap_fill": "placeholder",
-                "instance_id": self.identity.instance_id,
-                "host_id": self.identity.host_id,
-                "lock_owner": self.identity.lock_owner(),
-                "multi_instance_enabled": self.identity.multi_instance_enabled,
-            },
-            now=now,
-            thresholds=self.thresholds,
-        )
-        return WorkerTickSummary(status="heartbeat", trading_day=True)
-
-    def _record_research_only_health(self, summary: WorkerTickSummary) -> None:
-        """Keep V2-only workers observable without invoking the legacy pipeline."""
+    def _record_research_health(self, summary: ResearchWorkerTickV2) -> None:
+        """Persist a concise health heartbeat for the V2 task executor."""
 
         record_health_metric(
             self.connection,
@@ -229,8 +196,9 @@ class Worker:
             core_module_running=True,
             details={
                 "pipeline": "v2_research",
-                "tick_status": summary.status,
-                "provider": summary.provider,
+                "tasks": len(summary.task_ids),
+                "executed_steps": summary.executed_steps,
+                "replans": summary.replans,
                 "instance_id": self.identity.instance_id,
                 "host_id": self.identity.host_id,
                 "lock_owner": self.identity.lock_owner(),
@@ -245,11 +213,3 @@ class Worker:
             self.recovery_manager.record_recovery_attempt(state.last_failure)
             return [state.last_failure or "previous worker crash"]
         return []
-
-    def fill_data_gaps(self) -> list[str]:
-        return []
-
-    def run_research_tick(self) -> object | None:
-        """Run one externally scheduled subscription tick outside WorkerPipeline."""
-
-        return self.research_tick(self.identity.instance_id) if self.research_tick is not None else None

@@ -91,7 +91,7 @@ case "$report_type" in
     exit 2
     ;;
 esac
-if ! curl --silent --show-error --max-time 2 "http://127.0.0.1:8000/api/v1/health" >/dev/null; then
+if ! curl --silent --show-error --max-time 2 "http://127.0.0.1:8000/api/v2/health" >/dev/null; then
   echo "FastAPI is unavailable. Run ./scripts/stack_v2.sh start first." >&2
   exit 1
 fi

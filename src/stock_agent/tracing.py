@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from stock_agent.schemas import Signal, TraceChain
+from stock_agent.schemas import TraceChain
 
 
 def utc_now() -> datetime:
@@ -32,24 +32,6 @@ def create_trace(
         status=status,  # type: ignore[arg-type]
         error_msg=error_msg,
         created_at=created_at or utc_now(),
-    )
-
-
-def trace_for_signal(
-    signal: Signal,
-    *,
-    module: str = "strategy_engine",
-    parent_id: str | None = None,
-) -> TraceChain:
-    return create_trace(
-        trace_id=signal.trace_id,
-        parent_id=parent_id,
-        module=module,
-        input_ref=signal.source_bar_ids,
-        output_ref=[signal.signal_id],
-        status="success",
-        error_msg=None,
-        created_at=signal.created_at,
     )
 
 

@@ -1,4 +1,4 @@
-"""Command-line entry point for Stock Agent."""
+"""V2 command-line entry point for evidence-first research tasks."""
 
 from __future__ import annotations
 
@@ -9,18 +9,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from stock_agent import __version__
-from stock_agent.commands.bars import run_bars_query
-from stock_agent.commands.config_review import run_config_review
-from stock_agent.commands.deploy_validate import run_deploy_validate
-from stock_agent.commands.health import run_health
-from stock_agent.commands.interactive_cli import run_interactive_cli
 from stock_agent.commands.mcp_server import run_mcp_server
-from stock_agent.commands.query_cli import run_cli_query
-from stock_agent.commands.replay import run_replay
-from stock_agent.commands.retention import run_retention
-from stock_agent.commands.run_demo import run_demo
 from stock_agent.commands.telegram import run_telegram
-from stock_agent.commands.trace import run_trace_query
 from stock_agent.commands.web import run_web
 from stock_agent.commands.worker import run_worker
 from stock_agent.config import init_config
@@ -35,97 +25,34 @@ from stock_agent.services.production_v2 import ProductionV2Components, build_pro
 from stock_agent.storage.sqlite import initialize_runtime_database
 from stock_agent.worker.research_v2 import ResearchTaskWorkerV2
 
-COMMANDS: dict[str, str] = {
-    "init-config": "Generate default configs/config.yaml and .env.example.",
-    "run-demo": "Run the offline CSV demo flow end to end.",
-    "cli": "Start interactive CLI query and review mode.",
-    "telegram": "Start the Telegram bot listener.",
-    "web": "Start the local FastAPI API and embedded web workbench.",
-    "worker": "Start background data, strategy, signal, and health workers.",
-    "health": "Print current system health and recent errors.",
-    "replay": "Replay historical bars from the lake and recalculate signals.",
-    "deploy-validate": "Run offline deployment dry-run validation.",
-    "retention": "Review data retention actions; executes only with --execute.",
-    "mcp-server": "Start the read-only Stock Agent MCP server over stdio.",
-    "research": "Submit, inspect, control, or render a V2 research task.",
-}
-
-
-def _not_implemented(command: str) -> int:
-# This is a placeholder for commands that are not yet implemented. It prints a message and returns a non-zero exit code.
-    print(
-        f"stock-agent {command}: command skeleton is available, "
-        "but implementation is scheduled for a later task."
-    )
-    return 2
-
-
-def _command_handler(command: str):
-    #  This function returns a handler that prints a not implemented message.
-    return lambda _args: _not_implemented(command)
-
 
 def _runtime_root() -> Path:
-    """Return the project root used by CLI commands.
-
-    Deployment managers such as launchd, systemd, and pm2 can set
-    STOCK_AGENT_WORKDIR instead of relying on the current shell directory.
-    """
     workdir = os.getenv("STOCK_AGENT_WORKDIR")
-    if workdir:
-        return Path(workdir).expanduser()
-    return Path.cwd()
+    return Path(workdir).expanduser() if workdir else Path.cwd()
 
 
-def _runtime_config_path(root: Path) -> Path | None:
-    config_path = os.getenv("STOCK_AGENT_CONFIG")
-    if not config_path:
+def _config_path(root: Path, args: argparse.Namespace) -> Path | None:
+    configured = getattr(args, "config_path", None) or os.getenv("STOCK_AGENT_CONFIG")
+    if not configured:
         return None
-    path = Path(config_path).expanduser()
-    if path.is_absolute():
-        return path
-    return root / path
-
-
-def _argument_config_path(root: Path, args: argparse.Namespace) -> Path | None:
-    config_path = getattr(args, "config_path", None)
-    if config_path is None:
-        return _runtime_config_path(root)
-    path = Path(config_path).expanduser()
-    if path.is_absolute():
-        return path
-    return root / path
+    path = Path(configured).expanduser()
+    return path if path.is_absolute() else root / path
 
 
 def _handle_init_config(args: argparse.Namespace) -> int:
-    # init-config is implemented. It calls the init_config function and prints the results.
-    root = _runtime_root()
-    result = init_config(root, force=args.force, config_path=_runtime_config_path(root))
-    config_status = "created" if result.config_written else "exists"
-    env_status = "created" if result.env_example_written else "exists"
-    print(f"{config_status}: {result.config_path}")
-    print(f"{env_status}: {result.env_example_path}")
+    result = init_config(_runtime_root(), force=args.force, config_path=_config_path(_runtime_root(), args))
+    print(f"{'created' if result.config_written else 'exists'}: {result.config_path}")
+    print(f"{'created' if result.env_example_written else 'exists'}: {result.env_example_path}")
     return 0
 
 
-def _handle_run_demo(_args: argparse.Namespace) -> int:
+def _handle_web(args: argparse.Namespace) -> int:
     root = _runtime_root()
-    run_demo(root, config_context=load_config(root))
-    return 0
-
-
-def _handle_health(args: argparse.Namespace) -> int:
-    root = _runtime_root()
-    result = run_health(root, config_context=load_config(root), verbose=args.verbose)
-    return 0 if result.status != "unhealthy" else 1
-
-
-def _handle_telegram(args: argparse.Namespace) -> int:
-    root = _runtime_root()
-    return run_telegram(
+    return run_web(
         root,
-        config_context=load_config(root),
-        research_entry=getattr(args, "research_entry", None),
+        host=args.host,
+        port=args.port,
+        config_context=load_config(root, _config_path(root, args)),
     )
 
 
@@ -135,124 +62,28 @@ def _handle_worker(args: argparse.Namespace) -> int:
         root,
         once=args.once,
         interval_sec=args.interval_sec,
-        config_context=load_config(root, _argument_config_path(root, args)),
-        include_legacy_market_watch=args.include_legacy_market_watch,
+        config_context=load_config(root, _config_path(root, args)),
     )
 
 
-def _handle_web(args: argparse.Namespace) -> int:
+def _handle_mcp_server(args: argparse.Namespace) -> int:
     root = _runtime_root()
-    return run_web(
+    return run_mcp_server(root, config_context=load_config(root, _config_path(root, args)))
+
+
+def _handle_telegram(args: argparse.Namespace) -> int:
+    root = _runtime_root()
+    return run_telegram(
         root,
-        host=args.host,
-        port=args.port,
-        config_context=load_config(root, _argument_config_path(root, args)),
+        config_context=load_config(root, _config_path(root, args)),
+        research_entry=args.research_entry,
     )
-
-
-def _handle_cli_query(args: argparse.Namespace) -> int:
-    root = _runtime_root()
-    config_context = load_config(root)
-    if args.action is None:
-        return run_interactive_cli(
-            root,
-            config_context=config_context,
-            research_entry=getattr(args, "research_entry", None),
-        )
-    connection = initialize_runtime_database(root, config_context.config)
-    gate = InputGate.from_config(connection, config_context.config.input_control)
-    actor_ref = "cli:one-shot"
-    decision = gate.check("cli", actor_ref=actor_ref)
-    if not decision.allowed:
-        print(f"input_status=blocked\nmessage={decision.message}")
-        connection.close()
-        return 3
-    try:
-        if args.action == "bars":
-            result = run_bars_query(
-                root,
-                symbol=args.symbol,
-                from_value=args.from_ts,
-                to_value=args.to_ts,
-                config_context=config_context,
-            )
-            return 0 if result.ok else 1
-        if args.action == "trace":
-            result = run_trace_query(
-                root,
-                args.change_id,
-                config_context=config_context,
-            )
-            return 0 if result.ok else 1
-        if args.action in {"agent-trace", "budget"}:
-            result = run_cli_query(
-                root,
-                query=args.action,
-                limit=args.limit,
-                target_id=args.change_id,
-                config_context=config_context,
-            )
-            return result
-        if args.action in {"review", "approve", "reject"}:
-            return run_config_review(
-                root,
-                action=args.action,
-                change_id=args.change_id,
-                limit=args.limit,
-                config_path=_runtime_config_path(root),
-                config_context=config_context,
-            )
-        return run_cli_query(
-            root,
-            query=args.action,
-            limit=args.limit,
-            symbol=args.symbol,
-            period=args.period,
-            config_context=config_context,
-        )
-    finally:
-        gate.mark_offline("cli", actor_ref=actor_ref)
-        connection.close()
-
-
-def _handle_replay(args: argparse.Namespace) -> int:
-    root = _runtime_root()
-    result = run_replay(
-        root,
-        from_value=args.from_ts,
-        to_value=args.to_ts,
-        symbols=args.symbols or [],
-        persist=args.persist,
-        report_path=args.report,
-        config_context=load_config(root),
-    )
-    return 0 if result.ok else 1
-
-
-def _handle_deploy_validate(_args: argparse.Namespace) -> int:
-    root = _runtime_root()
-    result = run_deploy_validate(root, config_context=load_config(root))
-    return 0 if result.ok else 1
-
-
-def _handle_retention(args: argparse.Namespace) -> int:
-    root = _runtime_root()
-    result = run_retention(root, execute=args.execute, config_context=load_config(root))
-    return 0 if result.ok else 1
-
-
-def _handle_mcp_server(_args: argparse.Namespace) -> int:
-    root = _runtime_root()
-    return run_mcp_server(root, config_context=load_config(root))
 
 
 def _handle_research(args: argparse.Namespace) -> int:
-    entry = getattr(args, "research_entry", None)
-    if entry is None:
-        raise RuntimeError("V2 research entry was not initialized")
-
+    entry: ResearchEntryAdapter = args.research_entry
     root = _runtime_root()
-    config_context = load_config(root)
+    context = load_config(root, _config_path(root, args))
     action = args.action
     if action not in {"submit", "work"} and not args.task_id:
         print(f"research_status=failed\nmessage=research {action} requires TASK_ID")
@@ -260,55 +91,40 @@ def _handle_research(args: argparse.Namespace) -> int:
     if action == "input" and (not args.step_id or not args.payload_json):
         print("research_status=failed\nmessage=research input requires --step-id and --payload-json")
         return 2
-    connection = initialize_runtime_database(root, config_context.config)
-    actor_ref = "cli:one-shot"
-    requires_input = action in {"submit", "input", "pause", "resume", "cancel", "retry-report", "approve-signal"}
+
+    connection = initialize_runtime_database(root, context.config)
+    actor_ref = "cli:research"
+    input_actions = {"submit", "input", "pause", "resume", "cancel", "retry-report", "approve-signal"}
     try:
-        if requires_input:
-            decision = InputGate.from_config(connection, config_context.config.input_control).check(
-                "cli",
-                actor_ref=actor_ref,
-            )
+        if action in input_actions:
+            decision = InputGate.from_config(connection, context.config.input_control).check("cli", actor_ref=actor_ref)
             if not decision.allowed:
                 print(f"input_status=blocked\nmessage={decision.message}")
                 return 3
         if action == "submit":
-            payload = _research_request_payload(args)
-            status = entry.submit(
-                ResearchRequest.model_validate_json(payload),
-                source="cli",
-                actor_ref=actor_ref,
-            )
-            _print_research_status(status, action="submitted")
+            request = ResearchRequest.model_validate_json(_request_payload(args))
+            _print_status(entry.submit(request, source="cli", actor_ref=actor_ref), action="submitted")
             return 0
         if action == "work":
             worker = ResearchTaskWorkerV2(entry.service, worker_id="cli:research-work")
             tick = worker.run_task(args.task_id) if args.task_id else worker.run_once()
-            print(f"research_worker_tasks={len(tick.task_ids)}")
-            print(f"research_worker_steps={tick.executed_steps}")
-            print(f"research_worker_replans={tick.replans}")
-            print(f"research_worker_errors={len(tick.errors)}")
+            for line in tick.lines():
+                print(f"research_worker_{line}")
             return 0 if not tick.errors else 1
         if action in {"status", "watch"}:
-            status = entry.status(args.task_id, source="cli", actor_ref=actor_ref)
-            _print_research_status(status, action=action)
+            _print_status(entry.status(args.task_id, source="cli", actor_ref=actor_ref), action=action)
             return 0
         if action in {"pause", "resume", "cancel", "retry-report"}:
-            status = entry.control(args.task_id, action, source="cli", actor_ref=actor_ref)
-            _print_research_status(status, action=action)
+            _print_status(entry.control(args.task_id, action, source="cli", actor_ref=actor_ref), action=action)
             return 0
         if action == "input":
             payload = json.loads(args.payload_json)
             if not isinstance(payload, dict):
                 raise ValueError("research input payload must be a JSON object")
-            status = entry.provide_input(
-                args.task_id,
-                args.step_id,
-                payload,
-                source="cli",
-                actor_ref=actor_ref,
+            _print_status(
+                entry.provide_input(args.task_id, args.step_id, payload, source="cli", actor_ref=actor_ref),
+                action="input_received",
             )
-            _print_research_status(status, action="input_received")
             return 0
         if action == "report":
             report = entry.report(args.task_id, args.report_id, source="cli", actor_ref=actor_ref)
@@ -319,10 +135,8 @@ def _handle_research(args: argparse.Namespace) -> int:
             return 0
         if action == "approve-signal":
             if not args.signal_id or args.signal_version is None or not args.reason or not args.admin_ref:
-                raise ValueError(
-                    "research approve-signal requires --signal-id --signal-version --reason --admin-ref"
-                )
-            result = entry.approve_signal(
+                raise ValueError("approve-signal requires --signal-id, --signal-version, --reason, and --admin-ref")
+            approval = entry.approve_signal(
                 args.task_id,
                 signal_id=args.signal_id,
                 version=args.signal_version,
@@ -331,22 +145,19 @@ def _handle_research(args: argparse.Namespace) -> int:
                 actor_ref=args.admin_ref,
                 actor_type="human_admin",
             )
-            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            print(json.dumps(approval, ensure_ascii=False, sort_keys=True))
             return 0
     except (ResearchEntryError, ValueError, OSError, json.JSONDecodeError) as exc:
         print(f"research_status=failed\nmessage={exc}")
         return 1
     finally:
-        if requires_input:
-            InputGate.from_config(connection, config_context.config.input_control).mark_offline(
-                "cli",
-                actor_ref=actor_ref,
-            )
+        if action in input_actions:
+            InputGate.from_config(connection, context.config.input_control).mark_offline("cli", actor_ref=actor_ref)
         connection.close()
     return 2
 
 
-def _research_request_payload(args: argparse.Namespace) -> str:
+def _request_payload(args: argparse.Namespace) -> str:
     if args.request_json:
         return args.request_json
     if args.request_file:
@@ -354,7 +165,7 @@ def _research_request_payload(args: argparse.Namespace) -> str:
     raise ValueError("research submit requires --request-json or --request-file")
 
 
-def _print_research_status(status: dict[str, object], *, action: str) -> None:
+def _print_status(status: dict[str, object], *, action: str) -> None:
     task = status["task"]
     assert isinstance(task, dict)
     print(f"research_action={action}")
@@ -364,251 +175,68 @@ def _print_research_status(status: dict[str, object], *, action: str) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    # build the argument parser with subcommands and their handlers
-    parser = argparse.ArgumentParser(
-        prog="stock-agent",
-        description="Local-first US market watch and signal assistant.",
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"%(prog)s {__version__}",
-    )
-    subparsers = parser.add_subparsers(
-        dest="command",
-        metavar="command",
-        required=False,
-    )
-    for command, help_text in COMMANDS.items():
-        subparser = subparsers.add_parser(
-            command,
-            help=help_text,
-            description=help_text,
-        )
-        if command == "init-config":
-            subparser.add_argument(
-                "--force",
-                action="store_true",
-                help="Overwrite existing config files.",
-            )
-            subparser.set_defaults(handler=_handle_init_config)
-        elif command == "run-demo":
-            subparser.set_defaults(handler=_handle_run_demo)
-        elif command == "health":
-            subparser.add_argument(
-                "--verbose",
-                action="store_true",
-                help="Print module-level observability details.",
-            )
-            subparser.set_defaults(handler=_handle_health)
-        elif command == "cli":
-            subparser.add_argument(
-                "action",
-                choices=(
-                    "signals",
-                    "health",
-                    "config-changes",
-                    "news",
-                    "stats",
-                    "schedule",
-                    "provider-compare",
-                    "abnormal-bars",
-                    "bars",
-                    "trace",
-                    "agent-trace",
-                    "budget",
-                    "review",
-                    "approve",
-                    "reject",
-                ),
-                nargs="?",
-                help="Read-only query or config review action to run.",
-            )
-            subparser.add_argument(
-                "change_id",
-                nargs="?",
-                help="Config change id for review, approve, or reject.",
-            )
-            subparser.add_argument(
-                "--limit",
-                type=int,
-                default=10,
-                help="Maximum rows to display.",
-            )
-            subparser.add_argument(
-                "--symbol",
-                help="Optional symbol for news query.",
-            )
-            subparser.add_argument(
-                "--from",
-                dest="from_ts",
-                help="Inclusive UTC start for bars query, e.g. 2026-05-22T13:30:00Z.",
-            )
-            subparser.add_argument(
-                "--to",
-                dest="to_ts",
-                help="Inclusive UTC end for bars query, e.g. 2026-05-22T20:00:00Z.",
-            )
-            subparser.add_argument(
-                "--period",
-                choices=("day", "month", "year"),
-                default="day",
-                help="Statistics period for stats query.",
-            )
-            subparser.set_defaults(handler=_handle_cli_query)
-        elif command == "telegram":
-            subparser.set_defaults(handler=_handle_telegram)
-        elif command == "web":
-            subparser.add_argument(
-                "--host",
-                default="127.0.0.1",
-                help="Interface to bind; use 127.0.0.1 for local-only access.",
-            )
-            subparser.add_argument(
-                "--port",
-                type=int,
-                default=8000,
-                help="TCP port for the web workbench.",
-            )
-            subparser.add_argument(
-                "--config",
-                dest="config_path",
-                type=Path,
-                help="Runtime config path for this web invocation.",
-            )
-            subparser.set_defaults(handler=_handle_web)
-        elif command == "worker":
-            subparser.add_argument(
-                "--once",
-                action="store_true",
-                help="Run one worker tick and exit.",
-            )
-            subparser.add_argument(
-                "--interval-sec",
-                type=float,
-                default=30,
-                help="Seconds between worker ticks.",
-            )
-            subparser.add_argument(
-                "--config",
-                dest="config_path",
-                type=Path,
-                help="Runtime config path for this worker invocation.",
-            )
-            subparser.add_argument(
-                "--include-legacy-market-watch",
-                action="store_true",
-                help="Also run the V1 continuous market-watch pipeline; disabled by default for V2 research.",
-            )
-            subparser.set_defaults(handler=_handle_worker)
-        elif command == "replay":
-            subparser.add_argument(
-                "--from",
-                dest="from_ts",
-                help="Inclusive UTC start, e.g. 2026-05-22T13:30:00Z.",
-            )
-            subparser.add_argument(
-                "--to",
-                dest="to_ts",
-                help="Inclusive UTC end, e.g. 2026-05-22T20:00:00Z.",
-            )
-            subparser.add_argument(
-                "--symbols",
-                nargs="+",
-                required=True,
-                help="Symbols to replay, e.g. --symbols QQQ SPY.",
-            )
-            subparser.add_argument(
-                "--persist",
-                action="store_true",
-                help="Persist replay signals and audit traces into SQLite.",
-            )
-            subparser.add_argument(
-                "--report",
-                type=Path,
-                help="Optional regression report path to write as JSON.",
-            )
-            subparser.set_defaults(handler=_handle_replay)
-        elif command == "deploy-validate":
-            subparser.set_defaults(handler=_handle_deploy_validate)
-        elif command == "retention":
-            subparser.add_argument(
-                "--execute",
-                action="store_true",
-                help="Apply reviewed retention actions. Without this flag the command is dry-run only.",
-            )
-            subparser.set_defaults(handler=_handle_retention)
-        elif command == "mcp-server":
-            subparser.set_defaults(handler=_handle_mcp_server)
-        elif command == "research":
-            subparser.add_argument(
-                "action",
-                choices=("submit", "work", "status", "watch", "pause", "resume", "cancel", "retry-report", "input", "report", "approve-signal"),
-                help="V2 research task action.",
-            )
-            subparser.add_argument(
-                "task_id",
-                nargs="?",
-                help="Task id for task actions; optional for work, which otherwise drains all running tasks.",
-            )
-            subparser.add_argument(
-                "--request-json",
-                help="ResearchRequest JSON for submit.",
-            )
-            subparser.add_argument(
-                "--request-file",
-                type=Path,
-                help="UTF-8 file containing ResearchRequest JSON for submit.",
-            )
-            subparser.add_argument(
-                "--step-id",
-                help="Step id for input.",
-            )
-            subparser.add_argument(
-                "--payload-json",
-                help="JSON object used by input.",
-            )
-            subparser.add_argument(
-                "--report-id",
-                help="Optional final report id; defaults to the task's latest final report.",
-            )
-            subparser.add_argument("--signal-id", help="Signal id for the human approval action.")
-            subparser.add_argument("--signal-version", type=int, help="Signal version for the human approval action.")
-            subparser.add_argument("--reason", help="Required human approval reason.")
-            subparser.add_argument("--admin-ref", help="Authenticated configured admin reference for approval.")
-            subparser.add_argument(
-                "--format",
-                dest="output_format",
-                choices=("json", "markdown"),
-                default="markdown",
-                help="Output format for report.",
-            )
-            subparser.set_defaults(handler=_handle_research)
-        else:
-            subparser.set_defaults(handler=_command_handler(command))
+    parser = argparse.ArgumentParser(prog="stock-agent", description="Evidence-first market research Agent.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    subparsers = parser.add_subparsers(dest="command", required=False)
+
+    init = subparsers.add_parser("init-config", help="Generate the V2 config and environment template.")
+    init.add_argument("--force", action="store_true")
+    init.add_argument("--config", dest="config_path", type=Path)
+    init.set_defaults(handler=_handle_init_config)
+
+    web = subparsers.add_parser("web", help="Start the V2 FastAPI workbench.")
+    web.add_argument("--host", default="127.0.0.1")
+    web.add_argument("--port", type=int, default=8000)
+    web.add_argument("--config", dest="config_path", type=Path)
+    web.set_defaults(handler=_handle_web)
+
+    worker = subparsers.add_parser("worker", help="Start the durable V2 research worker.")
+    worker.add_argument("--once", action="store_true")
+    worker.add_argument("--interval-sec", type=float, default=30)
+    worker.add_argument("--config", dest="config_path", type=Path)
+    worker.set_defaults(handler=_handle_worker)
+
+    telegram = subparsers.add_parser("telegram", help="Start the optional V2 Telegram transport.")
+    telegram.add_argument("--config", dest="config_path", type=Path)
+    telegram.set_defaults(handler=_handle_telegram)
+
+    mcp = subparsers.add_parser("mcp-server", help="Start the read-only research MCP server over stdio.")
+    mcp.add_argument("--config", dest="config_path", type=Path)
+    mcp.set_defaults(handler=_handle_mcp_server)
+
+    research = subparsers.add_parser("research", help="Submit, execute, inspect, and render V2 research tasks.")
+    research.add_argument("action", choices=("submit", "work", "status", "watch", "pause", "resume", "cancel", "retry-report", "input", "report", "approve-signal"))
+    research.add_argument("task_id", nargs="?")
+    research.add_argument("--request-json")
+    research.add_argument("--request-file", type=Path)
+    research.add_argument("--step-id")
+    research.add_argument("--payload-json")
+    research.add_argument("--report-id")
+    research.add_argument("--signal-id")
+    research.add_argument("--signal-version", type=int)
+    research.add_argument("--reason")
+    research.add_argument("--admin-ref")
+    research.add_argument("--format", dest="output_format", choices=("json", "markdown"), default="markdown")
+    research.add_argument("--config", dest="config_path", type=Path)
+    research.set_defaults(handler=_handle_research)
     return parser
 
 
-def main(
-    argv: Sequence[str] | None = None,
-    *,
-    v2_agent_service: AgentService | None = None,
-) -> int:
-    # main function to parse arguments and call the appropriate handler
+def main(argv: Sequence[str] | None = None, *, v2_agent_service: AgentService | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    owned_components: ProductionV2Components | None = None
-    if args.command in {"cli", "research", "telegram"}:
-        if v2_agent_service is None:
-            owned_components = build_production_v2(_runtime_root())
-            v2_agent_service = owned_components.service
-        args.research_entry = ResearchEntryAdapter(v2_agent_service)
-    handler = getattr(args, "handler", None)
-    if handler is None:
+    if not getattr(args, "command", None):
         parser.print_help()
         return 0
+    owned_components: ProductionV2Components | None = None
+    if args.command in {"research", "telegram"}:
+        if v2_agent_service is None:
+            root = _runtime_root()
+            owned_components = build_production_v2(root, config_context=load_config(root, _config_path(root, args)))
+            v2_agent_service = owned_components.service
+        args.research_entry = ResearchEntryAdapter(v2_agent_service)
     try:
-        return handler(args)
+        return args.handler(args)
     finally:
         if owned_components is not None:
             owned_components.close()

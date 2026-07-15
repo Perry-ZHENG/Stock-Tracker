@@ -15,8 +15,6 @@ from uuid import uuid4
 from stock_agent.config import StockAgentConfig
 from stock_agent.health import HealthThresholds, record_health_metric
 from stock_agent.providers.base import MarketDataProvider
-from stock_agent.providers.csv_demo import CsvDemoProvider, CsvDemoProviderError
-from stock_agent.providers.live import LiveProviderError, create_live_provider
 from stock_agent.providers.synthetic_demo_v2 import SyntheticDemoProviderV2
 from stock_agent.providers.twelve_data import (
     TwelveDataProviderError,
@@ -24,7 +22,7 @@ from stock_agent.providers.twelve_data import (
 )
 from stock_agent.schemas import Bar
 from stock_agent.security import redact_sensitive, redact_text
-from stock_agent.storage.repositories import insert_notification, insert_trace_chain
+from stock_agent.storage.repositories import insert_trace_chain
 from stock_agent.tracing import create_trace, utc_now
 
 ProviderErrorType = Literal["configuration", "rate_limit", "latency", "data", "unknown"]
@@ -181,8 +179,7 @@ class ProviderRegistry:
     ) -> ProviderFetchResult:
         """Fetch one allowlisted provider without applying fallback order.
 
-        V2 evidence uses this only for an optional independent comparison source;
-        the legacy fallback API above remains the primary collection path.
+        V2 evidence uses this only for an optional independent comparison source.
         """
 
         request_id = _request_id(provider_name)
@@ -235,8 +232,6 @@ class ProviderRegistry:
             return self.provider_factories[provider_name]()
         if normalized in self.provider_factories:
             return self.provider_factories[normalized]()
-        if normalized == "csv_demo":
-            return CsvDemoProvider(self.root / self.config.provider.csv_demo.path)
         if normalized == "synthetic_demo":
             return SyntheticDemoProviderV2()
         if normalized in {"twelve_data", "twelvedata"}:
@@ -248,20 +243,6 @@ class ProviderRegistry:
                 max_retries=twelve_data.max_retries,
                 credit_budget_per_minute=twelve_data.credit_budget_per_minute,
             )
-        if normalized in {"live", self.config.provider.live.name.lower(), "alpha_vantage"}:
-            return create_live_provider(
-                provider_name=self.config.provider.live.name,
-                api_key_env=self.config.provider.live.api_key_env,
-            )
-        if normalized in {"broker", "broker_market_data"}:
-            # Kept lazy for the legacy compatibility path. V2 registries pass an
-            # allowlist that excludes this branch, so importing research modules
-            # never loads broker code.
-            from stock_agent.providers.broker_market_data import create_broker_market_data_provider
-
-            return create_broker_market_data_provider()
-        if normalized in {"cache", "fallback"}:
-            raise ProviderRegistryError("cache fallback provider is not implemented yet")
         raise ProviderRegistryError(f"unsupported provider: {provider_name}")
 
     def _reserve_provider_credits(self, provider_name: str, symbols: list[str] | None) -> None:
@@ -313,13 +294,6 @@ class ProviderRegistry:
             return
         if result.fallback_used:
             insert_trace_chain(self.connection, _trace_for_attempts(result.attempts, status="success"))
-            _insert_provider_notification(
-                self.connection,
-                status="pending",
-                provider_name=result.provider_name,
-                attempts=result.attempts,
-                message="provider fallback succeeded",
-            )
         record_health_metric(
             self.connection,
             module="provider_registry",
@@ -339,13 +313,6 @@ class ProviderRegistry:
         if self.connection is None:
             return
         insert_trace_chain(self.connection, _trace_for_attempts(attempts, status="failed"))
-        _insert_provider_notification(
-            self.connection,
-            status="pending",
-            provider_name=None,
-            attempts=attempts,
-            message="all providers failed",
-        )
         record_health_metric(
             self.connection,
             module="provider_registry",
@@ -366,14 +333,6 @@ def _classify_provider_error(exc: Exception) -> ProviderErrorType:
     message = str(exc).lower()
     if isinstance(exc, ProviderCreditBudgetError):
         return "rate_limit"
-    if isinstance(exc, CsvDemoProviderError):
-        return "data"
-    if exc.__class__.__name__ == "BrokerMarketDataProviderError":
-        return "configuration"
-    if isinstance(exc, LiveProviderError) and any(
-        token in message for token in ("missing api key", "unsupported", "required")
-    ):
-        return "configuration"
     if isinstance(exc, TwelveDataProviderError) and any(
         token in message for token in ("missing api key", "unsupported", "required")
     ):
@@ -412,34 +371,6 @@ def _trace_for_attempts(attempts: list[ProviderAttempt], *, status: str):
     )
 
 
-def _insert_provider_notification(
-    connection: sqlite3.Connection,
-    *,
-    status: str,
-    provider_name: str | None,
-    attempts: list[ProviderAttempt],
-    message: str,
-) -> None:
-    now = utc_now()
-    payload = {
-        "type": "provider_fallback",
-        "message": message,
-        "provider": provider_name,
-        "attempts": [_attempt_payload(attempt) for attempt in attempts],
-    }
-    insert_notification(
-        connection,
-        notification_id=_notification_id(attempts, message),
-        channel="provider_registry",
-        status=status,
-        payload=payload,
-        retry_count=0,
-        error_msg=None,
-        created_at=now,
-        updated_at=now,
-    )
-
-
 def _attempt_payload(attempt: ProviderAttempt) -> dict[str, object]:
     return {
         "provider_name": attempt.provider_name,
@@ -460,12 +391,6 @@ def _trace_id(attempts: list[ProviderAttempt]) -> str:
     payload = "|".join(attempt.request_id for attempt in attempts)
     digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
     return f"trace-provider-{digest}"
-
-
-def _notification_id(attempts: list[ProviderAttempt], message: str) -> str:
-    payload = "|".join([message, *[attempt.request_id for attempt in attempts]])
-    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
-    return f"notif-provider-{digest}"
 
 
 __all__ = [

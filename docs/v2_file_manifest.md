@@ -1,25 +1,19 @@
 # V2 File Manifest
 
-The authoritative generated manifest is produced by `stock_agent.evaluation.migration_audit.MigrationAudit`.
+The current production import graph is V2-only.
 
-| Classification | Rule | Removal policy |
-|---|---|---|
-| `new_v2` | `contracts/`, `services/`, `tooling/`, `signal_lab/`, `observability/`, `evaluation/` | Keep as the V2 implementation. |
-| `reuse_v2` | Config, providers, storage, health, query, Web/Telegram transport | Keep while used by the official path. |
-| `bridge_v2` | Legacy ReAct/Web/pipeline compatibility adapters | Remove only after import graph and runtime Trace checks are both zero. |
+| Area | Primary files |
+|---|---|
+| Composition and lifecycle | `services/production_v2.py`, `services/agent_service.py`, `services/entrypoints.py` |
+| Multi-agent runtime | `agents/orchestrator.py`, `agents/planner.py`, `agents/runtime.py`, `agents/{anomaly,macro,signal_discovery,report}.py` |
+| Evidence and artifacts | `research/{data_evidence,news_evidence}.py`, `evidence/service.py`, `artifacts/` |
+| Signal safety | `signals/{registry,runner,approval}.py`, `signal_lab/` |
+| Reports and validation | `reports/`, `validation/`, `storage/report_repository.py` |
+| Transports | `web/`, `cli.py`, `telegram/`, `commands/{web,worker,telegram,mcp_server}.py` |
+| Background execution | `worker/{research_v2,scheduler,recovery,identity}.py` |
+| External boundaries | `providers/{registry,twelve_data,synthetic_demo_v2}.py`, `mcp/`, `tooling/` |
+| Durable storage | `storage/`, `observability/`, `health/` |
 
-The manifest intentionally does not decide deletion from filename suffixes. `broker/` is retained as legacy code but is prohibited from V2 core imports.
+Removed source categories: V1 ReAct code, broker integration, continuous market-watch worker, formula strategies, notifications, V1 dialog/config commands, V1 API routes, legacy providers, old CSV regression data and all single-step tests.
 
-## G8 Snapshot
-
-Generated from the current static import graph on 2026-07-15. No bridge is eligible for removal: each still has one or more importers. Runtime hit counts must also be zero before removal, so this is a retention decision rather than a deletion request.
-
-| Bridge | Importers | Decision |
-|---|---:|---|
-| `agent/runner.py` | 5 | retain |
-| `agent/tools.py` | 6 | retain |
-| `cli.py` | 2 | retain |
-| `signals/pipeline.py` | 5 | retain |
-| `web/agent_service.py` | 4 | retain |
-
-New production files are `services/production_v2.py` and `worker/research_v2.py`. The audit classifies both as `new_v2`.
+`storage/migration_sql/0001_legacy.sql` is retained unchanged because migration checksums are immutable and its generic tables are still read by V2 persistence and audit paths. It does not re-enable V1 runtime code.

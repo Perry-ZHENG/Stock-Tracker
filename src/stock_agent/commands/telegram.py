@@ -70,7 +70,6 @@ def run_telegram(
     transport = api or TelegramHttpApi(token)
     stop = stop_event or Event()
     offset = 0
-    sent_approval_requests: set[str] = set()
     try:
         while not stop.is_set():
             bot.input_gate.heartbeat("telegram", actor_ref="telegram_bot")
@@ -85,11 +84,6 @@ def run_telegram(
                         continue
                     response = bot.handle_update(parsed)
                     transport.send_message(chat_id=response.chat_id, text=response.text)
-                _send_pending_approvals(
-                    bot,
-                    transport,
-                    sent_request_ids=sent_approval_requests,
-                )
             except TelegramTransportError as exc:
                 output.write(f"telegram_transport_error={exc}\n")
                 output.flush()
@@ -124,43 +118,6 @@ def _parse_update(raw_update: dict) -> TelegramUpdate | None:
     if not isinstance(user_id, int) or not isinstance(chat_id, int):
         return None
     return TelegramUpdate(user_id=user_id, chat_id=chat_id, text=text)
-
-
-def _send_pending_approvals(
-    bot: TelegramBot,
-    transport: TelegramHttpApi,
-    *,
-    sent_request_ids: set[str],
-) -> None:
-    state = bot.input_gate.state()
-    if state.active_source != "telegram" or not state.active_actor_ref:
-        return
-    chat_id = _chat_id_from_actor(state.active_actor_ref)
-    if chat_id is None:
-        return
-    for message in bot.pending_approval_messages(chat_id=chat_id):
-        request_id = _request_id_from_message(message.text)
-        if request_id is None or request_id in sent_request_ids:
-            continue
-        transport.send_message(chat_id=message.chat_id, text=message.text)
-        sent_request_ids.add(request_id)
-
-
-def _chat_id_from_actor(actor_ref: str) -> int | None:
-    parts = actor_ref.split(":")
-    if len(parts) != 4 or parts[0] != "user" or parts[2] != "chat":
-        return None
-    try:
-        return int(parts[3])
-    except ValueError:
-        return None
-
-
-def _request_id_from_message(text: str) -> str | None:
-    for line in text.splitlines():
-        if line.startswith("request_id="):
-            return line.split("=", 1)[1].strip() or None
-    return None
 
 
 __all__ = ["run_telegram"]

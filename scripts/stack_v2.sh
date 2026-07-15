@@ -10,7 +10,7 @@ WEB_PID_FILE="$RUNTIME_DIR/stock_agent.web.pid"
 WORKER_PID_FILE="$RUNTIME_DIR/stock_agent.worker.pid"
 WEB_LOG="$LOG_DIR/web.log"
 WORKER_LOG="$LOG_DIR/worker.log"
-WEB_HEALTH_URL="http://127.0.0.1:8000/api/v1/health"
+WEB_HEALTH_URL="http://127.0.0.1:8000/api/v2/health"
 AGENT_BIN="$ROOT_DIR/.venv/bin/stock-agent"
 PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
 

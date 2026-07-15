@@ -1,15 +1,15 @@
-"""Telegram listener skeleton and command handling."""
+"""Optional Telegram transport for V2 research tasks."""
 
-from stock_agent.telegram.listener import (
-    TelegramCommandResult,
-    TelegramRole,
-    handle_telegram_message,
-    resolve_telegram_role,
+from stock_agent.telegram.bot import (
+    TelegramBot,
+    TelegramBotSettings,
+    TelegramOutboundMessage,
+    TelegramUpdate,
 )
 
 __all__ = [
-    "TelegramCommandResult",
-    "TelegramRole",
-    "handle_telegram_message",
-    "resolve_telegram_role",
+    "TelegramBot",
+    "TelegramBotSettings",
+    "TelegramOutboundMessage",
+    "TelegramUpdate",
 ]

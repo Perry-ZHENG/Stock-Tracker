@@ -328,7 +328,7 @@
 
     async function refreshInputState() {
       try {
-        const state = await fetchJson("/api/v1/input");
+        const state = await fetchJson("/api/v2/input");
         const active = state.active_source || "尚未选择";
         activeSource.textContent = active;
         activeOnline.textContent = state.active_online ? "（在线）" : "（离线）";
@@ -361,7 +361,7 @@
 
     async function decideSwitchRequest(requestId, action) {
       try {
-        await fetchJson(`/api/v1/input/switch/requests/${requestId}/${action}`, {method: "POST"});
+        await fetchJson(`/api/v2/input/switch/requests/${requestId}/${action}`, {method: "POST"});
         await refreshInputState();
       } catch (error) { showError(error.message); }
     }
@@ -395,12 +395,12 @@
     });
     requestSwitch.addEventListener("click", async () => {
       try {
-        await fetchJson("/api/v1/input/switch/requests", {method: "POST"});
+        await fetchJson("/api/v2/input/switch/requests", {method: "POST"});
         await refreshInputState();
       } catch (error) { showError(error.message); }
     });
     dataMode.dispatchEvent(new Event("change"));
-    setInterval(() => fetchJson("/api/v1/input/heartbeat", {method: "POST"}).catch(() => {}), 15000);
+    setInterval(() => fetchJson("/api/v2/input/heartbeat", {method: "POST"}).catch(() => {}), 15000);
     refreshInputState();
   </script>
 </body>

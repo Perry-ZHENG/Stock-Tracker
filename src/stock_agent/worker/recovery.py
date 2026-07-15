@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
-from stock_agent.storage.repositories import get_checkpoint, insert_notification, upsert_checkpoint
+from stock_agent.storage.repositories import get_checkpoint, upsert_checkpoint
 from stock_agent.tracing import utc_now
 
 
@@ -57,7 +57,6 @@ class CrashRecoveryManager:
         )
         self._persist(next_state)
         if next_state.stopped:
-            self.notify_failure("crash budget exceeded", next_state)
             raise CrashBudgetExceeded("worker crash budget exceeded")
         return next_state
 
@@ -71,32 +70,11 @@ class CrashRecoveryManager:
         )
         self._persist(next_state)
         if next_state.stopped:
-            self.notify_failure("recovery budget exceeded", next_state)
             raise CrashBudgetExceeded("worker recovery budget exceeded")
         return next_state
 
     def reset_after_success(self) -> None:
         self._persist(CrashBudgetState(crash_count=0, restart_attempts=0))
-
-    def notify_failure(self, message: str, state: CrashBudgetState) -> None:
-        now = utc_now()
-        insert_notification(
-            self.connection,
-            notification_id=f"notif-worker-recovery-{message.replace(' ', '-')}",
-            channel="worker",
-            status="pending",
-            payload={
-                "type": "worker_failure",
-                "message": message,
-                "crash_count": state.crash_count,
-                "restart_attempts": state.restart_attempts,
-                "last_failure": state.last_failure,
-            },
-            retry_count=0,
-            error_msg=None,
-            created_at=now,
-            updated_at=now,
-        )
 
     def _persist(self, state: CrashBudgetState) -> None:
         upsert_checkpoint(

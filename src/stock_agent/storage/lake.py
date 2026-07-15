@@ -11,10 +11,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from stock_agent.schemas import Bar, NewsItem, Signal
+from stock_agent.schemas import Bar, NewsItem
 from stock_agent.security import redact_sensitive
 
-LakeDataset = Literal["raw_bars", "features", "signals", "news"]
+LakeDataset = Literal["raw_bars", "features", "news"]
 
 
 @dataclass(frozen=True)
@@ -28,8 +28,7 @@ class LakeWriteResult:
 class LakeWriter:
     """Write replayable data into date-partitioned lake paths.
 
-    Parquet is preferred, but v1 falls back to JSONL when no local Parquet engine is
-    installed. The public API stays stable so the fallback can be replaced later.
+    Parquet is preferred, with JSONL fallback when no local Parquet engine is installed.
     """
 
     def __init__(self, root: Path) -> None:
@@ -37,9 +36,6 @@ class LakeWriter:
 
     def write_raw_bars(self, bars: list[Bar]) -> LakeWriteResult:
         return self._write_models("raw_bars", bars, partition_date=_date_from_models(bars, "timestamp"))
-
-    def write_signals(self, signals: list[Signal]) -> LakeWriteResult:
-        return self._write_models("signals", signals, partition_date=_date_from_models(signals, "timestamp"))
 
     def write_news(self, news_items: list[NewsItem]) -> LakeWriteResult:
         return self._write_models("news", news_items, partition_date=_date_from_models(news_items, "published_at"))

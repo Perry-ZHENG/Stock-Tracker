@@ -9,13 +9,7 @@ provider:
   fallback:
     enabled: true
     order:
-      - csv_demo
       - synthetic_demo
-  csv_demo:
-    path: data/sample/sample_bars.csv
-  live:
-    name: placeholder
-    api_key_env: MARKET_DATA_API_KEY
   twelve_data:
     api_key_env: TWELVE_DATA_API_KEY
     base_url: https://api.twelvedata.com
@@ -29,46 +23,6 @@ symbols:
     - AAPL
     - MSFT
     - NVDA
-bar:
-  interval: 30m
-  session: regular_only
-  include_pre_market: false
-  include_after_hours: false
-schedule:
-  timezone: America/New_York
-  regular_session_start: 09:30
-  regular_session_end: 16:00
-  premarket_lead_minutes: 60
-  close_focus_window_minutes: 60
-  afterhours_tail_minutes: 60
-strategies:
-  ma_cross:
-    enabled: true
-    pairs:
-      - [3, 5]
-      - [5, 10]
-      - [10, 20]
-  boll:
-    enabled: true
-    window: 20
-    bandwidth_baseline_window: 20
-  macd:
-    enabled: false
-    fast: 12
-    slow: 26
-    signal: 9
-  kdj:
-    enabled: false
-    window: 9
-    k_smoothing: 3
-    d_smoothing: 3
-  active_j:
-    enabled: false
-    j_threshold: 20.0
-    ma_window: 80
-    kdj_window: 9
-    k_smoothing: 3
-    d_smoothing: 3
 telegram:
   enabled: false
   token_env: TELEGRAM_BOT_TOKEN

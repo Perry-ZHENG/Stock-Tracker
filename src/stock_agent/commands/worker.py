@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, TextIO
+from typing import TextIO
 
 from stock_agent.config_loader import RuntimeConfigContext, load_config
 from stock_agent.health import HealthThresholds
@@ -14,7 +12,6 @@ from stock_agent.services.production_v2 import build_production_v2
 from stock_agent.storage.sqlite import initialize_runtime_database
 from stock_agent.worker import ResearchTaskWorkerV2, ResearchWorkerPipelineV2, SingleInstanceLockError, Worker
 from stock_agent.worker.identity import build_worker_identity
-from stock_agent.worker.pipeline import WorkerPipeline
 
 
 def run_worker(
@@ -24,8 +21,6 @@ def run_worker(
     interval_sec: float = 30,
     stream: TextIO | None = None,
     config_context: RuntimeConfigContext | None = None,
-    now_fn: Callable[[], datetime] | None = None,
-    include_legacy_market_watch: bool = False,
 ) -> int:
     output = stream or sys.stdout
     config_context = config_context or load_config(root)
@@ -33,18 +28,6 @@ def run_worker(
     connection = initialize_runtime_database(root, config)
     identity = build_worker_identity()
     lock_path = (root / config.storage.sqlite_path).with_suffix(".worker.lock")
-    legacy_pipeline = (
-        WorkerPipeline(
-            root=root,
-            config=config,
-            connection=connection,
-            notification_stream=output,
-            now_fn=now_fn or _runtime_now_fn(),
-            identity=identity,
-        )
-        if include_legacy_market_watch
-        else None
-    )
     v2_components = build_production_v2(root, config_context=config_context, connection=connection)
     worker = Worker(
         connection,
@@ -54,7 +37,6 @@ def run_worker(
         identity=identity,
         pipeline=ResearchWorkerPipelineV2(
             research_worker=ResearchTaskWorkerV2(v2_components.service, worker_id=identity.instance_id),
-            legacy_pipeline=legacy_pipeline,
         ),
     )
 
@@ -80,21 +62,8 @@ def run_worker(
         output.flush()
         exit_code = 0
     finally:
-        connection.close()
+        v2_components.close()
     return exit_code
-
-
-def _runtime_now_fn() -> Callable[[], datetime]:
-    fixed_now = os.getenv("STOCK_AGENT_NOW")
-    if not fixed_now:
-        from stock_agent.tracing import utc_now
-
-        return utc_now
-    parsed = datetime.fromisoformat(fixed_now.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    frozen = parsed.astimezone(UTC)
-    return lambda: frozen
 
 
 __all__ = ["run_worker"]
